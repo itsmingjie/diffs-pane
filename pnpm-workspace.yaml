@@ -1,0 +1,5 @@
+minimumReleaseAge: 2880
+
+allowBuilds:
+  '@parcel/watcher': true
+  esbuild: true
