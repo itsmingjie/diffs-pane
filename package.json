@@ -1,0 +1,72 @@
+{
+  "name": "diffs-pane",
+  "version": "0.1.0",
+  "description": "Standalone live diff viewer and review pane for Git and jj working trees. Outputs authenticated localhost URLs.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@11.3.0",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=11.3.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/itsmingjie/diffs-pane.git"
+  },
+  "bugs": {
+    "url": "https://github.com/itsmingjie/diffs-pane/issues"
+  },
+  "homepage": "https://github.com/itsmingjie/diffs-pane#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "dp": "./bin/dp.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "extension",
+    "skills",
+    "ui/fonts/CommitMono-LICENSE.txt",
+    "ui/fonts/Geist-LICENSE.txt",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "pnpm run build:server && pnpm run build:ui",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:ui": "vite build",
+    "dev:ui": "vite",
+    "dev:sample": "pnpm run build && node scripts/dev-sample.js",
+    "dev:sample:stop": "node scripts/dev-sample.js --stop",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.ui.json --noEmit",
+    "lint": "oxlint --max-warnings 0 src ui/src extension test scripts",
+    "format": "oxfmt src ui/src extension test scripts bin",
+    "format:check": "oxfmt --check src ui/src extension test scripts bin",
+    "prepack": "pnpm run build",
+    "release": "node scripts/release.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@parcel/watcher": "^2.6.0"
+  },
+  "devDependencies": {
+    "@fontsource-variable/geist": "^5.3.0",
+    "@pierre/diffs": "1.2.12",
+    "@pierre/trees": "1.0.0-beta.5",
+    "@radix-ui/react-icons": "^1.3.2",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "oxfmt": "^0.60.0",
+    "oxlint": "^1.75.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting
+        run: pnpm run format:check
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build package tarball
+        run: |
+          mkdir package
+          pnpm pack --pack-destination package
+
+      - name: Upload package tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: diffs-pane-package
+          path: package/diffs-pane-*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  install-smoke-test:
+    name: Install (${{ matrix.os }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Download package tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: diffs-pane-package
+          path: package
+
+      - name: Install package
+        shell: bash
+        run: |
+          tarballs=(package/diffs-pane-*.tgz)
+          mkdir .smoke
+          printf '{"private":true}\n' > .smoke/package.json
+          printf "allowBuilds:\n  '@parcel/watcher': true\n" > .smoke/pnpm-workspace.yaml
+          pnpm --dir .smoke add "../${tarballs[0]}"
+
+      - name: Verify CLI
+        shell: bash
+        run: |
+          pnpm --dir .smoke exec dp --help
+          pnpm --dir .smoke exec dp status --json

@@ -1,0 +1,31 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react", "import", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn"
+  },
+  "rules": {
+    "no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+    "typescript/consistent-type-imports": ["error", { "fixStyle": "inline-type-imports" }],
+    // Sequential awaits are intentional: VCS commands, shutdown, and polling
+    // must run in order, not in parallel.
+    "no-await-in-loop": "off",
+    // The automatic JSX runtime does not need React in scope.
+    "react/react-in-jsx-scope": "off",
+    // Vite-specific import specifiers (e.g. `?worker`) and side-effect CSS
+    // imports; TypeScript already validates real module shapes.
+    "import/default": "off",
+    "import/no-unassigned-import": "off",
+    // `toSorted()` is unavailable in the ES2022 lib target; sorts here
+    // operate on locally created copies.
+    "unicorn/no-array-sort": "off"
+  },
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2024": true
+  },
+  "ignorePatterns": ["dist/**", "node_modules/**"]
+}
