@@ -197,10 +197,6 @@ refresh, or rerun `pnpm run dev:sample` to rebuild and reset it. Set
 `DIFFS_PANE_SAMPLE_ROOT=/absolute/path` to use another location; the script
 refuses to replace directories it did not create.
 
-Tooling uses [OXC](https://oxc.rs) (`oxlint` and `oxfmt`), TypeScript, Vitest,
-and Vite. pnpm rejects dependency releases newer than 48 hours through
-`minimumReleaseAge: 2880` in `pnpm-workspace.yaml`.
-
 ### Environment variables
 
 | Variable | Purpose |
