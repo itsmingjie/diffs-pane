@@ -344,9 +344,16 @@ export function findUniqueAnchor(
   side: DiffSide,
   anchorText: string,
 ): number | null {
+  return findUniqueAnchorInLines(sideLines(file, side), anchorText);
+}
+
+/** Find a unique anchor in precomputed side lines. */
+export function findUniqueAnchorInLines(
+  all: readonly SideLine[],
+  anchorText: string,
+): number | null {
   const targets = anchorText.split('\n');
-  const all = sideLines(file, side);
-  const matches: number[] = [];
+  let match: number | null = null;
   outer: for (let i = 0; i + targets.length <= all.length; i++) {
     for (let j = 0; j < targets.length; j++) {
       const candidate = all[i + j]!;
@@ -354,7 +361,8 @@ export function findUniqueAnchor(
       // Require contiguous line numbers so the block is one real region.
       if (j > 0 && candidate.line !== all[i + j - 1]!.line + 1) continue outer;
     }
-    matches.push(all[i]!.line);
+    if (match !== null) return null;
+    match = all[i]!.line;
   }
-  return matches.length === 1 ? matches[0]! : null;
+  return match;
 }

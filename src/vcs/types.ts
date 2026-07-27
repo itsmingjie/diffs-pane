@@ -12,6 +12,8 @@ export interface ComputeOptions {
   base?: string;
   /** Baseline captured at turn start; required for the `turn` filter. */
   turnBaseline?: TurnBaseline;
+  /** Identity used to share one immutable work-tree snapshot across related computations. */
+  snapshotKey?: object;
 }
 
 /** A recoverable VCS failure that should be surfaced in the UI. */

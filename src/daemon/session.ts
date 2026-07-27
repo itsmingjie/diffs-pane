@@ -169,6 +169,7 @@ export class Session {
   private async computePayload(
     filter: DiffFilter,
     signal: AbortSignal | undefined,
+    snapshotKey?: object,
   ): Promise<PatchPayload> {
     const generatedAt = new Date().toISOString();
     try {
@@ -176,6 +177,7 @@ export class Session {
         signal,
         base: this.base,
         turnBaseline: this.turn?.baseline,
+        snapshotKey,
       });
       if (Buffer.byteLength(patch, 'utf8') > MAX_PATCH_BYTES) {
         return this.errorPayload(
@@ -184,16 +186,16 @@ export class Session {
           generatedAt,
         );
       }
-      const files = summarizeFiles(parsePatch(patch));
+      const parsedFiles = parsePatch(patch);
       const payload: PatchPayload = {
         filter,
         patchHash: sha256(patch),
         patch,
-        files,
+        files: summarizeFiles(parsedFiles),
         error: null,
         generatedAt,
       };
-      if (this.reviews.reanchor(filter, patch, payload.patchHash)) {
+      if (this.reviews.reanchor(filter, parsedFiles, payload.patchHash)) {
         this.broadcastComments();
       }
       return payload;
@@ -257,12 +259,13 @@ export class Session {
   }
 
   private async refreshViewed(signal: AbortSignal): Promise<void> {
+    const snapshotKey = {};
     for (const filter of this.viewedFilters()) {
       const previous = this.cache.get(filter);
       if (previous && !previous.dirty) continue;
       let payload: PatchPayload;
       try {
-        payload = await this.computePayload(filter, signal);
+        payload = await this.computePayload(filter, signal, snapshotKey);
       } catch (error) {
         if (error instanceof ExecError && error.aborted) return; // Superseded.
         throw error;

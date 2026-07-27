@@ -75,6 +75,16 @@ describe('GitBackend', () => {
     expect(patch).toBe('');
   });
 
+  it('shares the current work-tree snapshot within one refresh pass', async () => {
+    const snapshotKey = {};
+    writeFileSyncDeep(join(dir, 'src/app.ts'), 'const a = 2;\n');
+    const first = await backend.computePatch('branch', { base: 'main', snapshotKey });
+
+    writeFileSyncDeep(join(dir, 'src/app.ts'), 'const a = 3;\n');
+    expect(await backend.computePatch('branch', { base: 'main', snapshotKey })).toBe(first);
+    expect(await backend.computePatch('branch', { base: 'main' })).not.toBe(first);
+  });
+
   it('turn: includes changes made during the turn even on pre-dirty files', async () => {
     // File is dirty before the turn starts.
     writeFileSyncDeep(join(dir, 'src/app.ts'), 'const a = 1;\npre-dirty\n');

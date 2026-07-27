@@ -14,6 +14,8 @@ const BASE_CANDIDATES = ['origin/main', 'origin/master', 'main', 'master', 'trun
 
 export class GitBackend implements VcsBackend {
   readonly kind = 'git' as const;
+  private snapshotEnvironment: Record<string, string> | undefined;
+  private readonly workTreeSnapshots = new WeakMap<object, Promise<string>>();
 
   constructor(
     readonly root: string,
@@ -49,6 +51,8 @@ export class GitBackend implements VcsBackend {
    * private diffs-pane state directory and read repository objects as alternates.
    */
   private async snapshotEnv(signal?: AbortSignal): Promise<Record<string, string>> {
+    if (this.snapshotEnvironment) return this.snapshotEnvironment;
+
     const commonDirResult = await this.git(['rev-parse', '--git-common-dir'], { signal });
     const commonDir = commonDirResult.stdout.trim();
     const repositoryObjects = join(
@@ -57,7 +61,7 @@ export class GitBackend implements VcsBackend {
     );
     const snapshotObjects = gitObjectsPath(this.root, this.stateDirOverride);
     mkdirSync(snapshotObjects, { recursive: true, mode: 0o700 });
-    return {
+    this.snapshotEnvironment = {
       GIT_OBJECT_DIRECTORY: snapshotObjects,
       GIT_ALTERNATE_OBJECT_DIRECTORIES: [
         repositoryObjects,
@@ -66,6 +70,7 @@ export class GitBackend implements VcsBackend {
         .filter((path): path is string => path !== undefined && path !== '')
         .join(delimiter),
     };
+    return this.snapshotEnvironment;
   }
 
   /** Snapshot tracked and untracked-but-unignored files through a temporary index. */
@@ -90,6 +95,22 @@ export class GitBackend implements VcsBackend {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  }
+
+  /** Reuse one immutable current tree when multiple filters refresh together. */
+  private snapshotWorkTreeForCompute(
+    options: ComputeOptions,
+    objectEnv: Record<string, string>,
+  ): Promise<string> {
+    const token = options.snapshotKey;
+    if (!token) return this.snapshotWorkTree(options.signal, objectEnv);
+
+    let snapshot = this.workTreeSnapshots.get(token);
+    if (!snapshot) {
+      snapshot = this.snapshotWorkTree(options.signal, objectEnv);
+      this.workTreeSnapshots.set(token, snapshot);
+    }
+    return snapshot;
   }
 
   /** Tree of the current index, computed from a copy so nothing is mutated. */
@@ -178,7 +199,7 @@ export class GitBackend implements VcsBackend {
       }
     }
     objectEnv ??= await this.snapshotEnv(signal);
-    const currentTree = await this.snapshotWorkTree(signal, objectEnv);
+    const currentTree = await this.snapshotWorkTreeForCompute(options, objectEnv);
     const diff = await this.git(
       ['diff-tree', '-r', '-p', '--find-renames', '--no-color', baseTree, currentTree],
       { signal, env: objectEnv },
