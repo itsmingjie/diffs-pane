@@ -14,6 +14,12 @@ interface HttpResult {
   body: string;
 }
 
+function closeServer(server: DaemonServer['server']): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
 function rawRequest(
   port: number,
   method: string,
@@ -126,6 +132,37 @@ describe('daemon server', () => {
     const againBody = JSON.parse(again.body) as { url: string; created: boolean };
     expect(againBody.created).toBe(false);
     expect(againBody.url).toBe(sessionUrl);
+  });
+
+  it('uses the preferred port when available and another port when occupied', async () => {
+    const first = await startServer({
+      controlToken: CONTROL_TOKEN,
+      manager: new SessionManager(stateDir, () => {}),
+    });
+    const preferredPort = first.port;
+    await closeServer(first.server);
+
+    const reused = await startServer({
+      controlToken: CONTROL_TOKEN,
+      manager: new SessionManager(stateDir, () => {}),
+      preferredPort,
+    });
+    try {
+      expect(reused.port).toBe(preferredPort);
+
+      const fallback = await startServer({
+        controlToken: CONTROL_TOKEN,
+        manager: new SessionManager(stateDir, () => {}),
+        preferredPort,
+      });
+      try {
+        expect(fallback.port).not.toBe(preferredPort);
+      } finally {
+        await closeServer(fallback.server);
+      }
+    } finally {
+      await closeServer(reused.server);
+    }
   });
 
   it('can disable and re-enable filesystem watching', async () => {

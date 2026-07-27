@@ -42,7 +42,8 @@ dp watch
 ```
 
 Open the URL once. The viewer updates automatically; there is no need to rerun
-`dp` after edits.
+`dp` after edits. The daemon uses port `34337` unless another process has
+claimed it.
 
 Choose a starting diff source when needed:
 

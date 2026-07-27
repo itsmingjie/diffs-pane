@@ -1,5 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import { rmSync } from 'node:fs';
 
 import { isDaemonHealthy, readDaemonInfo } from '../control/client.js';
 import { writeJsonAtomic } from '../store/fsutil.js';
@@ -9,6 +8,7 @@ import { SessionManager } from './sessions.js';
 
 const SHUTDOWN_GRACE_MS = 750;
 const PING_INTERVAL_MS = 25_000;
+const DEFAULT_PORT = 34_337;
 
 /** Per-user singleton daemon serving all working trees over loopback HTTP. */
 async function main(): Promise<void> {
@@ -29,11 +29,6 @@ async function main(): Promise<void> {
       try {
         await manager.stopAll();
       } finally {
-        try {
-          rmSync(daemonInfoPath(dir), { force: true });
-        } catch {
-          // ignore
-        }
         daemon.server.close(() => process.exit(code));
         setTimeout(() => process.exit(code), SHUTDOWN_GRACE_MS).unref();
       }
@@ -48,16 +43,20 @@ async function main(): Promise<void> {
     }, SHUTDOWN_GRACE_MS);
   });
 
+  await manager.restore();
+
   const controlToken = randomBytes(24).toString('base64url');
-  const daemon = await startServer({ controlToken, manager });
+  const daemon = await startServer({
+    controlToken,
+    manager,
+    preferredPort: DEFAULT_PORT,
+  });
 
   writeJsonAtomic(daemonInfoPath(dir), {
     pid: process.pid,
     port: daemon.port,
     controlToken,
   });
-
-  await manager.restore();
 
   const pingTimer = setInterval(() => manager.pingAll(), PING_INTERVAL_MS);
 
