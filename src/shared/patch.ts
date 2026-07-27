@@ -313,12 +313,15 @@ export function anchorTextForRange(
   startLine: number,
   endLine: number,
 ): string | null {
-  const all = sideLines(file, side);
+  const textByLine = new Map<number, string>();
+  for (const l of sideLines(file, side)) {
+    if (!textByLine.has(l.line)) textByLine.set(l.line, l.text);
+  }
   const texts: string[] = [];
   for (let n = startLine; n <= endLine; n++) {
-    const found = all.find((l) => l.line === n);
-    if (!found) return null;
-    texts.push(found.text);
+    const text = textByLine.get(n);
+    if (text === undefined) return null;
+    texts.push(text);
   }
   return texts.join('\n');
 }

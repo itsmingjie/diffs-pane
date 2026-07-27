@@ -64,6 +64,9 @@ export class Session {
   turn: TurnState | undefined;
 
   private readonly cache = new Map<DiffFilter, CacheEntry>();
+  private readonly inflightPatches = new Map<DiffFilter, Promise<PatchPayload>>();
+  /** Bumped on every invalidation so straddling computes stay marked stale. */
+  private patchGeneration = 0;
   private readonly clients = new Set<SseClient>();
   private watcher: WorkTreeWatcher | null = null;
   private refreshAbort: AbortController | null = null;
@@ -159,11 +162,26 @@ export class Session {
   async getPatch(filter: DiffFilter): Promise<PatchPayload> {
     const entry = this.cache.get(filter);
     if (entry && !entry.dirty) return entry.payload;
-    const payload = await this.computePayload(filter, undefined);
-    // A concurrent refresh may have already stored a fresher result.
-    const current = this.cache.get(filter);
-    if (!current || current.dirty) this.cache.set(filter, { payload, dirty: false });
-    return this.cache.get(filter)!.payload;
+
+    // Coalesce concurrent requests into one compute per filter.
+    let pending = this.inflightPatches.get(filter);
+    if (!pending) {
+      const startGeneration = this.patchGeneration;
+      pending = this.computePayload(filter, undefined)
+        .then((payload) => {
+          // A concurrent refresh may have already stored a fresher result.
+          const current = this.cache.get(filter);
+          if (current && !current.dirty) return current.payload;
+          // Results that straddled an invalidation are served but stay dirty.
+          this.cache.set(filter, { payload, dirty: this.patchGeneration !== startGeneration });
+          return payload;
+        })
+        .finally(() => {
+          if (this.inflightPatches.get(filter) === pending) this.inflightPatches.delete(filter);
+        });
+      this.inflightPatches.set(filter, pending);
+    }
+    return pending;
   }
 
   private async computePayload(
@@ -225,6 +243,8 @@ export class Session {
   private handleFsChange(): void {
     if (this.closed) return;
     // Everything is stale; recompute only what connected clients view.
+    this.patchGeneration++;
+    this.inflightPatches.clear();
     for (const filter of DIFF_FILTERS) {
       const entry = this.cache.get(filter);
       if (entry) entry.dirty = true;
@@ -263,6 +283,21 @@ export class Session {
     for (const filter of this.viewedFilters()) {
       const previous = this.cache.get(filter);
       if (previous && !previous.dirty) continue;
+
+      // An on-demand request is already computing this filter: share it
+      // instead of duplicating the snapshot work (common on page load).
+      const shared = this.inflightPatches.get(filter);
+      if (shared) {
+        await shared.catch(() => undefined);
+        const stored = this.cache.get(filter);
+        if (stored && !stored.dirty) {
+          if (previous?.payload.patchHash !== stored.payload.patchHash) {
+            this.broadcast('patch', { filter, patchHash: stored.payload.patchHash });
+          }
+          continue;
+        }
+      }
+
       let payload: PatchPayload;
       try {
         payload = await this.computePayload(filter, signal, snapshotKey);
@@ -332,6 +367,8 @@ export class Session {
   }
 
   private invalidateFilter(filter: DiffFilter): void {
+    this.patchGeneration++;
+    this.inflightPatches.delete(filter);
     const entry = this.cache.get(filter);
     if (entry) entry.dirty = true;
   }

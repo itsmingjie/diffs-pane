@@ -77,6 +77,9 @@ describe('refresh coalescing', () => {
 
   beforeEach(async () => {
     dir = makeTempDir('dp-coalesce-');
+    concurrent = 0;
+    maxConcurrent = 0;
+    computeCalls = 0;
     const record: SessionRecord = {
       sessionId: 's',
       token: 't',
@@ -94,6 +97,37 @@ describe('refresh coalescing', () => {
   afterEach(async () => {
     await session.close();
     cleanup(dir);
+  });
+
+  it('coalesces concurrent patch requests into one compute', async () => {
+    const [a, b] = await Promise.all([session.getPatch('branch'), session.getPatch('branch')]);
+    expect(a).toBe(b);
+    expect(computeCalls).toBe(1);
+    // A later request is served from cache without recomputing.
+    expect(await session.getPatch('branch')).toBe(a);
+    expect(computeCalls).toBe(1);
+  });
+
+  it('shares an in-flight patch request with the SSE catch-up refresh', async () => {
+    const writes: string[] = [];
+    const fakeRes = {
+      write: (chunk: string) => {
+        writes.push(chunk);
+        return true;
+      },
+      on: () => fakeRes,
+      end: () => {},
+    };
+
+    // Page load: the patch fetch and the SSE catch-up race for the same filter.
+    const fetched = session.getPatch('branch');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    session.addClient(fakeRes as any, 'branch');
+
+    const payload = await fetched;
+    await waitFor(() => writes.some((w) => w.includes('event: patch')));
+    expect(computeCalls).toBe(1);
+    expect(writes.join('')).toContain(payload.patchHash);
   });
 
   it('bounds refresh concurrency to one under rapid edit bursts', async () => {
