@@ -133,7 +133,8 @@ function FilesTree({
   onSearchControlChange(control: FileSearchControl): void;
 }) {
   const sortedPaths = useMemo(() => sortPathsForTree(files.map((f) => f.path)), [files]);
-  const preparedInput = useMemo(() => preparePresortedFileTreeInput(sortedPaths), [sortedPaths]);
+  const stablePaths = useStablePaths(sortedPaths);
+  const preparedInput = useMemo(() => preparePresortedFileTreeInput(stablePaths), [stablePaths]);
 
   // Latest data for callbacks captured once at model creation.
   const filePathsRef = useRef(new Set<string>());
@@ -182,10 +183,13 @@ function FilesTree({
       path: f.path,
       status: KIND_TO_STATUS[f.kind],
     }));
-    // Clear first so unchanged statuses still refresh comment-count decorations.
-    model.setGitStatus(undefined);
     model.setGitStatus(status);
-  }, [model, files, comments]);
+  }, [model, files]);
+
+  useEffect(() => {
+    // Re-render decorations with the latest value from commentCountsRef.
+    model.setComposition();
+  }, [model, comments]);
 
   if (files.length === 0) {
     return <div className="sidebar-empty">No changed files</div>;
@@ -328,6 +332,17 @@ function groupByFile(comments: ReviewComment[], files: PatchFileSummary[]): Comm
   for (const file of files) emit(file.path);
   for (const path of [...byPath.keys()].sort()) emit(path); // outdated-only files
   return ordered;
+}
+
+function useStablePaths(paths: readonly string[]): readonly string[] {
+  const stable = useRef(paths);
+  if (
+    stable.current.length !== paths.length ||
+    stable.current.some((path, index) => path !== paths[index])
+  ) {
+    stable.current = paths;
+  }
+  return stable.current;
 }
 
 function countByPath(comments: ReviewComment[]): Map<string, number> {
