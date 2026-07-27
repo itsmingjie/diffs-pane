@@ -212,11 +212,6 @@ export function App() {
   const versionsRef = useRef(new Map<string, { version: number; key: string }>());
   const items = useMemo<CodeViewItem<AnnotationMeta>[]>(() => {
     const hash = patch?.patchHash ?? '';
-    // Drop version state for files no longer in the diff.
-    const liveIds = new Set(parsedFiles.map(({ path }) => `f:${path}`));
-    for (const id of versionsRef.current.keys()) {
-      if (!liveIds.has(id)) versionsRef.current.delete(id);
-    }
     return parsedFiles.map(({ path, fileDiff }) => {
       const id = `f:${path}`;
       const annotations = annotationsByPath.get(path) ?? [];

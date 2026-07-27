@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ServerResponse } from 'node:http';
 
-import { parsePatch, summarizeFiles } from '../shared/patch.js';
+import { parsePatch, summarizeFiles, type ParsedFilePatch } from '../shared/patch.js';
 import {
   DIFF_FILTERS,
   type DiffFilter,
@@ -44,6 +44,11 @@ interface SseClient {
 interface CacheEntry {
   payload: PatchPayload;
   dirty: boolean;
+}
+
+interface ComputedPayload {
+  payload: PatchPayload;
+  parsedFiles?: ParsedFilePatch[];
 }
 
 export function sha256(text: string): string {
@@ -160,27 +165,52 @@ export class Session {
 
   /** Serve the patch for a filter, recomputing only when stale. */
   async getPatch(filter: DiffFilter): Promise<PatchPayload> {
-    const entry = this.cache.get(filter);
-    if (entry && !entry.dirty) return entry.payload;
-
-    // Coalesce concurrent requests into one compute per filter.
-    let pending = this.inflightPatches.get(filter);
-    if (!pending) {
-      const startGeneration = this.patchGeneration;
-      pending = this.computePayload(filter, undefined)
-        .then((payload) => {
-          // A concurrent refresh may have already stored a fresher result.
-          const current = this.cache.get(filter);
-          if (current && !current.dirty) return current.payload;
-          // Results that straddled an invalidation are served but stay dirty.
-          this.cache.set(filter, { payload, dirty: this.patchGeneration !== startGeneration });
-          return payload;
-        })
-        .finally(() => {
-          if (this.inflightPatches.get(filter) === pending) this.inflightPatches.delete(filter);
-        });
-      this.inflightPatches.set(filter, pending);
+    for (;;) {
+      const entry = this.cache.get(filter);
+      if (entry && !entry.dirty) return entry.payload;
+      try {
+        return await this.computeAndCache(filter, undefined);
+      } catch (error) {
+        // A request may have joined an abortable refresh computation. Retry
+        // against the new generation rather than surfacing a transient 500.
+        if (error instanceof ExecError && error.aborted) continue;
+        throw error;
+      }
     }
+  }
+
+  /** Coalesce all patch computation paths into one in-flight job per filter. */
+  private computeAndCache(
+    filter: DiffFilter,
+    signal: AbortSignal | undefined,
+    snapshotKey?: object,
+  ): Promise<PatchPayload> {
+    const existing = this.inflightPatches.get(filter);
+    if (existing) return existing;
+
+    const startGeneration = this.patchGeneration;
+    let pending: Promise<PatchPayload>;
+    pending = this.computePayload(filter, signal, snapshotKey)
+      .then(({ payload, parsedFiles }) => {
+        // A newer concurrent job may have already stored a fresh result.
+        const current = this.cache.get(filter);
+        if (current && !current.dirty) return current.payload;
+        // Results that straddled an invalidation stay dirty for the next pass.
+        const dirty = this.patchGeneration !== startGeneration;
+        this.cache.set(filter, { payload, dirty });
+        if (
+          !dirty &&
+          parsedFiles &&
+          this.reviews.reanchor(filter, parsedFiles, payload.patchHash)
+        ) {
+          this.broadcastComments();
+        }
+        return payload;
+      })
+      .finally(() => {
+        if (this.inflightPatches.get(filter) === pending) this.inflightPatches.delete(filter);
+      });
+    this.inflightPatches.set(filter, pending);
     return pending;
   }
 
@@ -188,7 +218,7 @@ export class Session {
     filter: DiffFilter,
     signal: AbortSignal | undefined,
     snapshotKey?: object,
-  ): Promise<PatchPayload> {
+  ): Promise<ComputedPayload> {
     const generatedAt = new Date().toISOString();
     try {
       const patch = await this.backend.computePatch(filter, {
@@ -198,11 +228,13 @@ export class Session {
         snapshotKey,
       });
       if (Buffer.byteLength(patch, 'utf8') > MAX_PATCH_BYTES) {
-        return this.errorPayload(
-          filter,
-          `Patch exceeds the ${Math.round(MAX_PATCH_BYTES / 1024 / 1024)}MB size limit.`,
-          generatedAt,
-        );
+        return {
+          payload: this.errorPayload(
+            filter,
+            `Patch exceeds the ${Math.round(MAX_PATCH_BYTES / 1024 / 1024)}MB size limit.`,
+            generatedAt,
+          ),
+        };
       }
       const parsedFiles = parsePatch(patch);
       const payload: PatchPayload = {
@@ -213,17 +245,14 @@ export class Session {
         error: null,
         generatedAt,
       };
-      if (this.reviews.reanchor(filter, parsedFiles, payload.patchHash)) {
-        this.broadcastComments();
-      }
-      return payload;
+      return { payload, parsedFiles };
     } catch (error) {
       if (error instanceof ExecError && error.aborted) throw error;
       const message =
         error instanceof VcsError
           ? error.message
           : `Failed to compute ${filter} diff: ${error instanceof Error ? error.message : String(error)}`;
-      return this.errorPayload(filter, message, generatedAt);
+      return { payload: this.errorPayload(filter, message, generatedAt) };
     }
   }
 
@@ -284,30 +313,16 @@ export class Session {
       const previous = this.cache.get(filter);
       if (previous && !previous.dirty) continue;
 
-      // An on-demand request is already computing this filter: share it
-      // instead of duplicating the snapshot work (common on page load).
-      const shared = this.inflightPatches.get(filter);
-      if (shared) {
-        await shared.catch(() => undefined);
-        const stored = this.cache.get(filter);
-        if (stored && !stored.dirty) {
-          if (previous?.payload.patchHash !== stored.payload.patchHash) {
-            this.broadcast('patch', { filter, patchHash: stored.payload.patchHash });
-          }
-          continue;
-        }
-      }
-
       let payload: PatchPayload;
       try {
-        payload = await this.computePayload(filter, signal, snapshotKey);
+        payload = await this.computeAndCache(filter, signal, snapshotKey);
       } catch (error) {
         if (error instanceof ExecError && error.aborted) return; // Superseded.
         throw error;
       }
-      const unchanged = previous?.payload.patchHash === payload.patchHash;
-      this.cache.set(filter, { payload, dirty: false });
-      if (!unchanged) {
+      const stored = this.cache.get(filter);
+      if (!stored || stored.dirty || signal.aborted) return; // Superseded.
+      if (previous?.payload.patchHash !== payload.patchHash) {
         // Broadcast only real changes so clients never reparse identical patches.
         this.broadcast('patch', { filter, patchHash: payload.patchHash });
       }

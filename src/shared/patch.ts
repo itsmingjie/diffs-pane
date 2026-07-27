@@ -313,17 +313,19 @@ export function anchorTextForRange(
   startLine: number,
   endLine: number,
 ): string | null {
-  const textByLine = new Map<number, string>();
-  for (const l of sideLines(file, side)) {
-    if (!textByLine.has(l.line)) textByLine.set(l.line, l.text);
+  const all = sideLines(file, side);
+  if (endLine < startLine) return '';
+  const lineCount = endLine - startLine + 1;
+  if (!Number.isSafeInteger(lineCount) || lineCount < 1 || lineCount > all.length) return null;
+  const texts = Array.from({ length: lineCount }, (): string | undefined => undefined);
+  let remaining = lineCount;
+  for (const line of all) {
+    const index = line.line - startLine;
+    if (index < 0 || index >= texts.length || texts[index] !== undefined) continue;
+    texts[index] = line.text;
+    if (--remaining === 0) break;
   }
-  const texts: string[] = [];
-  for (let n = startLine; n <= endLine; n++) {
-    const text = textByLine.get(n);
-    if (text === undefined) return null;
-    texts.push(text);
-  }
-  return texts.join('\n');
+  return remaining === 0 ? (texts as string[]).join('\n') : null;
 }
 
 /** The raw hunk (with @@ header) that contains the given line range. */
