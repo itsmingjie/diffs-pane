@@ -49,6 +49,21 @@ describe.skipIf(!hasJj())('JjBackend', () => {
     expect(paths).toContain('wip.txt');
   });
 
+  it('branch: starts at the parent of the nearest branch bookmark', async () => {
+    writeFileSyncDeep(join(dir, 'upstream.txt'), 'older main work\n');
+    jj(['commit', '-m', 'newer main'], dir);
+    writeFileSyncDeep(join(dir, 'feature.txt'), 'feature work\n');
+    jj(['commit', '-m', 'feature commit'], dir);
+    jj(['bookmark', 'create', 'feature', '-r', '@-'], dir);
+    writeFileSyncDeep(join(dir, 'wip.txt'), 'in progress\n');
+
+    const files = parsePatch(await backend.computePatch('branch', {}));
+    const paths = files.map((f) => f.path);
+    expect(paths).toContain('feature.txt');
+    expect(paths).toContain('wip.txt');
+    expect(paths).not.toContain('upstream.txt');
+  });
+
   it('turn: compares the snapshot commit with the current @', async () => {
     writeFileSyncDeep(join(dir, 'README.md'), 'hello\npre-dirty\n');
     const baseline = await backend.captureTurnBaseline();

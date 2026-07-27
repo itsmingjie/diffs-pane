@@ -6,6 +6,8 @@ import { VcsError, type ComputeOptions, type TurnBaseline, type VcsBackend } fro
 
 const STALE_RETRY_COUNT = 4;
 const STALE_RETRY_BASE_DELAY_MS = 100;
+const DEFAULT_BRANCH_BASE =
+  'coalesce(parents(latest(heads(::@ & bookmarks() & ~::trunk()))), fork_point(trunk() | @))';
 
 export class JjBackend implements VcsBackend {
   readonly kind = 'jj' as const;
@@ -84,7 +86,7 @@ export class JjBackend implements VcsBackend {
         // jj has no staging area: show the current working-copy change (@).
         return this.jj(['diff', '--git'], signal);
       case 'branch': {
-        const from = options.base ?? 'fork_point(trunk() | @)';
+        const from = options.base ?? DEFAULT_BRANCH_BASE;
         return this.jj(['diff', '--git', '--from', from, '--to', '@'], signal);
       }
       case 'turn': {
