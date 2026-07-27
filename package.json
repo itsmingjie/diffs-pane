@@ -1,6 +1,6 @@
 {
   "name": "diffs-pane",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Standalone live diff viewer and review pane for Git and jj working trees. Outputs authenticated localhost URLs.",
   "license": "Apache-2.0",
   "type": "module",
