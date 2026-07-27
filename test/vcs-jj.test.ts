@@ -3,8 +3,17 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { parsePatch } from '../src/shared/patch.js';
 import { detectBackend } from '../src/vcs/detect.js';
+import type { ExecError } from '../src/vcs/exec.js';
 import { type JjBackend } from '../src/vcs/jj.js';
-import { cleanup, hasJj, jj, makeJjRepo, makeTempDir, writeFileSyncDeep } from './helpers.js';
+import {
+  cleanup,
+  hasJj,
+  jj,
+  makeJjRepo,
+  makeTempDir,
+  sleep,
+  writeFileSyncDeep,
+} from './helpers.js';
 
 describe.skipIf(!hasJj())('JjBackend', () => {
   let dir: string;
@@ -58,5 +67,39 @@ describe.skipIf(!hasJj())('JjBackend', () => {
   it('reports empty diff for a clean working copy', async () => {
     const patch = await backend.computePatch('unstaged', {});
     expect(parsePatch(patch)).toEqual([]);
+  });
+
+  it('waits out a transient stale-working-copy state', async () => {
+    const otherParent = makeTempDir('dp-jj-workspace-');
+    const other = join(otherParent, 'other');
+    try {
+      writeFileSyncDeep(join(dir, 'transient.txt'), 'content\n');
+      jj(['status'], dir); // Snapshot the file before another workspace rewrites @.
+      jj(['workspace', 'add', other, '--name', 'other'], dir);
+      jj(['restore', '--into', 'default@', '--from', 'root()'], other);
+
+      const recovery = (async () => {
+        await sleep(150);
+        jj(['workspace', 'update-stale'], dir);
+      })();
+      const [patch] = await Promise.all([backend.computePatch('unstaged', {}), recovery]);
+      expect(typeof patch).toBe('string');
+    } finally {
+      cleanup(otherParent);
+    }
+  });
+
+  it('skips an obsolete queued command without poisoning the queue', async () => {
+    writeFileSyncDeep(join(dir, 'queued.txt'), 'content\n');
+    const running = backend.computePatch('unstaged', {});
+    const controller = new AbortController();
+    const obsolete = backend.computePatch('branch', { signal: controller.signal });
+    controller.abort();
+
+    await running;
+    await expect(obsolete).rejects.toEqual(
+      expect.objectContaining<Partial<ExecError>>({ aborted: true }),
+    );
+    await expect(backend.computePatch('unstaged', {})).resolves.toEqual(expect.any(String));
   });
 });
