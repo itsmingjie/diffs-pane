@@ -62,10 +62,23 @@ export function execFile(
     let timedOut = false;
     let aborted = false;
 
-    const timer = setTimeout(() => {
+    const timeoutCheckMs = Math.max(1, Math.min(1_000, Math.floor(timeoutMs / 4)));
+    let activeElapsedMs = 0;
+    let lastTimeoutCheck = Date.now();
+    const timeoutTimer = setInterval(() => {
+      const now = Date.now();
+      const elapsed = now - lastTimeoutCheck;
+      lastTimeoutCheck = now;
+      if (elapsed < 0 || elapsed > timeoutCheckMs * 2) {
+        // The event loop was suspended. Give the child a new active-time window.
+        activeElapsedMs = 0;
+        return;
+      }
+      activeElapsedMs += elapsed;
+      if (activeElapsedMs < timeoutMs) return;
       timedOut = true;
       child.kill('SIGKILL');
-    }, timeoutMs);
+    }, timeoutCheckMs);
 
     const onAbort = () => {
       aborted = true;
@@ -76,7 +89,7 @@ export function execFile(
     const finish = (error: Error | null, result?: ExecResult) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearInterval(timeoutTimer);
       signal?.removeEventListener('abort', onAbort);
       if (error) reject(error);
       else resolve(result!);
