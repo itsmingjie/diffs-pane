@@ -322,7 +322,6 @@ body,
   border-right: 1px solid var(--border);
   background: var(--bg-raised);
   min-height: 0;
-  contain: strict;
 }
 
 .sidebar-backdrop {
