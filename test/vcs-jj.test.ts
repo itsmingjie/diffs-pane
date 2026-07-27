@@ -7,6 +7,7 @@ import type { ExecError } from '../src/vcs/exec.js';
 import { type JjBackend } from '../src/vcs/jj.js';
 import {
   cleanup,
+  git,
   hasJj,
   jj,
   makeJjRepo,
@@ -62,6 +63,30 @@ describe.skipIf(!hasJj())('JjBackend', () => {
     expect(paths).toContain('feature.txt');
     expect(paths).toContain('wip.txt');
     expect(paths).not.toContain('upstream.txt');
+  });
+
+  it('branch: includes every commit on a pushed branch', async () => {
+    const remote = makeTempDir('dp-jj-remote-');
+    try {
+      git(['init', '--bare'], remote);
+      jj(['git', 'remote', 'add', 'origin', remote], dir);
+      jj(['git', 'push', '--bookmark', 'main'], dir);
+
+      writeFileSyncDeep(join(dir, 'first.txt'), 'first branch commit\n');
+      jj(['commit', '-m', 'first branch commit'], dir);
+      jj(['bookmark', 'create', 'feature', '-r', '@-'], dir);
+      jj(['git', 'push', '--bookmark', 'feature'], dir);
+
+      writeFileSyncDeep(join(dir, 'second.txt'), 'second branch commit\n');
+      jj(['commit', '-m', 'second branch commit'], dir);
+      jj(['bookmark', 'set', 'feature', '-r', '@-'], dir);
+      writeFileSyncDeep(join(dir, 'wip.txt'), 'in progress\n');
+
+      const files = parsePatch(await backend.computePatch('branch', {}));
+      expect(files.map((f) => f.path)).toEqual(['first.txt', 'second.txt', 'wip.txt']);
+    } finally {
+      cleanup(remote);
+    }
   });
 
   it('turn: compares the snapshot commit with the current @', async () => {
