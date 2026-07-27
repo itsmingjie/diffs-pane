@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ServerResponse } from 'node:http';
 
-import { parsePatch, summarizeFiles } from '../shared/patch.js';
+import { parsePatch, summarizeFiles, type ParsedFilePatch } from '../shared/patch.js';
 import {
   DIFF_FILTERS,
   type DiffFilter,
@@ -46,6 +46,11 @@ interface CacheEntry {
   dirty: boolean;
 }
 
+interface ComputedPayload {
+  payload: PatchPayload;
+  parsedFiles?: ParsedFilePatch[];
+}
+
 export function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
@@ -64,6 +69,9 @@ export class Session {
   turn: TurnState | undefined;
 
   private readonly cache = new Map<DiffFilter, CacheEntry>();
+  private readonly inflightPatches = new Map<DiffFilter, Promise<PatchPayload>>();
+  /** Bumped on every invalidation so straddling computes stay marked stale. */
+  private patchGeneration = 0;
   private readonly clients = new Set<SseClient>();
   private watcher: WorkTreeWatcher | null = null;
   private refreshAbort: AbortController | null = null;
@@ -157,53 +165,94 @@ export class Session {
 
   /** Serve the patch for a filter, recomputing only when stale. */
   async getPatch(filter: DiffFilter): Promise<PatchPayload> {
-    const entry = this.cache.get(filter);
-    if (entry && !entry.dirty) return entry.payload;
-    const payload = await this.computePayload(filter, undefined);
-    // A concurrent refresh may have already stored a fresher result.
-    const current = this.cache.get(filter);
-    if (!current || current.dirty) this.cache.set(filter, { payload, dirty: false });
-    return this.cache.get(filter)!.payload;
+    for (;;) {
+      const entry = this.cache.get(filter);
+      if (entry && !entry.dirty) return entry.payload;
+      try {
+        return await this.computeAndCache(filter, undefined);
+      } catch (error) {
+        // A request may have joined an abortable refresh computation. Retry
+        // against the new generation rather than surfacing a transient 500.
+        if (error instanceof ExecError && error.aborted) continue;
+        throw error;
+      }
+    }
+  }
+
+  /** Coalesce all patch computation paths into one in-flight job per filter. */
+  private computeAndCache(
+    filter: DiffFilter,
+    signal: AbortSignal | undefined,
+    snapshotKey?: object,
+  ): Promise<PatchPayload> {
+    const existing = this.inflightPatches.get(filter);
+    if (existing) return existing;
+
+    const startGeneration = this.patchGeneration;
+    let pending: Promise<PatchPayload>;
+    pending = this.computePayload(filter, signal, snapshotKey)
+      .then(({ payload, parsedFiles }) => {
+        // A newer concurrent job may have already stored a fresh result.
+        const current = this.cache.get(filter);
+        if (current && !current.dirty) return current.payload;
+        // Results that straddled an invalidation stay dirty for the next pass.
+        const dirty = this.patchGeneration !== startGeneration;
+        this.cache.set(filter, { payload, dirty });
+        if (
+          !dirty &&
+          parsedFiles &&
+          this.reviews.reanchor(filter, parsedFiles, payload.patchHash)
+        ) {
+          this.broadcastComments();
+        }
+        return payload;
+      })
+      .finally(() => {
+        if (this.inflightPatches.get(filter) === pending) this.inflightPatches.delete(filter);
+      });
+    this.inflightPatches.set(filter, pending);
+    return pending;
   }
 
   private async computePayload(
     filter: DiffFilter,
     signal: AbortSignal | undefined,
-  ): Promise<PatchPayload> {
+    snapshotKey?: object,
+  ): Promise<ComputedPayload> {
     const generatedAt = new Date().toISOString();
     try {
       const patch = await this.backend.computePatch(filter, {
         signal,
         base: this.base,
         turnBaseline: this.turn?.baseline,
+        snapshotKey,
       });
       if (Buffer.byteLength(patch, 'utf8') > MAX_PATCH_BYTES) {
-        return this.errorPayload(
-          filter,
-          `Patch exceeds the ${Math.round(MAX_PATCH_BYTES / 1024 / 1024)}MB size limit.`,
-          generatedAt,
-        );
+        return {
+          payload: this.errorPayload(
+            filter,
+            `Patch exceeds the ${Math.round(MAX_PATCH_BYTES / 1024 / 1024)}MB size limit.`,
+            generatedAt,
+          ),
+        };
       }
-      const files = summarizeFiles(parsePatch(patch));
+      const parsedFiles = parsePatch(patch);
       const payload: PatchPayload = {
         filter,
         patchHash: sha256(patch),
         patch,
-        files,
+        files: summarizeFiles(parsedFiles),
         error: null,
         generatedAt,
       };
-      if (this.reviews.reanchor(filter, patch, payload.patchHash)) {
-        this.broadcastComments();
-      }
-      return payload;
+      return { payload, parsedFiles };
     } catch (error) {
       if (error instanceof ExecError && error.aborted) throw error;
       const message =
         error instanceof VcsError
           ? error.message
           : `Failed to compute ${filter} diff: ${error instanceof Error ? error.message : String(error)}`;
-      return this.errorPayload(filter, message, generatedAt);
+      return { payload: this.errorPayload(filter, message, generatedAt) };
     }
   }
 
@@ -223,6 +272,8 @@ export class Session {
   private handleFsChange(): void {
     if (this.closed) return;
     // Everything is stale; recompute only what connected clients view.
+    this.patchGeneration++;
+    this.inflightPatches.clear();
     for (const filter of DIFF_FILTERS) {
       const entry = this.cache.get(filter);
       if (entry) entry.dirty = true;
@@ -257,19 +308,21 @@ export class Session {
   }
 
   private async refreshViewed(signal: AbortSignal): Promise<void> {
+    const snapshotKey = {};
     for (const filter of this.viewedFilters()) {
       const previous = this.cache.get(filter);
       if (previous && !previous.dirty) continue;
+
       let payload: PatchPayload;
       try {
-        payload = await this.computePayload(filter, signal);
+        payload = await this.computeAndCache(filter, signal, snapshotKey);
       } catch (error) {
         if (error instanceof ExecError && error.aborted) return; // Superseded.
         throw error;
       }
-      const unchanged = previous?.payload.patchHash === payload.patchHash;
-      this.cache.set(filter, { payload, dirty: false });
-      if (!unchanged) {
+      const stored = this.cache.get(filter);
+      if (!stored || stored.dirty || signal.aborted) return; // Superseded.
+      if (previous?.payload.patchHash !== payload.patchHash) {
         // Broadcast only real changes so clients never reparse identical patches.
         this.broadcast('patch', { filter, patchHash: payload.patchHash });
       }
@@ -329,6 +382,8 @@ export class Session {
   }
 
   private invalidateFilter(filter: DiffFilter): void {
+    this.patchGeneration++;
+    this.inflightPatches.delete(filter);
     const entry = this.cache.get(filter);
     if (entry) entry.dirty = true;
   }

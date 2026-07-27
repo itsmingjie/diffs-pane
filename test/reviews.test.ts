@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { parsePatch } from '../src/shared/patch.js';
 import { ReviewStore, readReviews } from '../src/store/reviews.js';
 import { cleanup, makeTempDir } from './helpers.js';
 
@@ -96,7 +97,7 @@ describe('ReviewStore', () => {
 
   it('re-anchors uniquely matched comments to new line numbers', () => {
     const comment = createComment();
-    store.reanchor('branch', PATCH_V2, 'hash-v2');
+    store.reanchor('branch', parsePatch(PATCH_V2), 'hash-v2');
     const updated = store.get(comment.id)!;
     expect(updated.outdated).toBe(false);
     expect(updated.startLine).toBe(4);

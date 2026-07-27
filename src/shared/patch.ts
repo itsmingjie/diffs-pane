@@ -314,13 +314,18 @@ export function anchorTextForRange(
   endLine: number,
 ): string | null {
   const all = sideLines(file, side);
-  const texts: string[] = [];
-  for (let n = startLine; n <= endLine; n++) {
-    const found = all.find((l) => l.line === n);
-    if (!found) return null;
-    texts.push(found.text);
+  if (endLine < startLine) return '';
+  const lineCount = endLine - startLine + 1;
+  if (!Number.isSafeInteger(lineCount) || lineCount < 1 || lineCount > all.length) return null;
+  const texts = Array.from({ length: lineCount }, (): string | undefined => undefined);
+  let remaining = lineCount;
+  for (const line of all) {
+    const index = line.line - startLine;
+    if (index < 0 || index >= texts.length || texts[index] !== undefined) continue;
+    texts[index] = line.text;
+    if (--remaining === 0) break;
   }
-  return texts.join('\n');
+  return remaining === 0 ? (texts as string[]).join('\n') : null;
 }
 
 /** The raw hunk (with @@ header) that contains the given line range. */
@@ -344,9 +349,16 @@ export function findUniqueAnchor(
   side: DiffSide,
   anchorText: string,
 ): number | null {
+  return findUniqueAnchorInLines(sideLines(file, side), anchorText);
+}
+
+/** Find a unique anchor in precomputed side lines. */
+export function findUniqueAnchorInLines(
+  all: readonly SideLine[],
+  anchorText: string,
+): number | null {
   const targets = anchorText.split('\n');
-  const all = sideLines(file, side);
-  const matches: number[] = [];
+  let match: number | null = null;
   outer: for (let i = 0; i + targets.length <= all.length; i++) {
     for (let j = 0; j < targets.length; j++) {
       const candidate = all[i + j]!;
@@ -354,7 +366,8 @@ export function findUniqueAnchor(
       // Require contiguous line numbers so the block is one real region.
       if (j > 0 && candidate.line !== all[i + j - 1]!.line + 1) continue outer;
     }
-    matches.push(all[i]!.line);
+    if (match !== null) return null;
+    match = all[i]!.line;
   }
-  return matches.length === 1 ? matches[0]! : null;
+  return match;
 }

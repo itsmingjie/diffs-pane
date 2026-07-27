@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
-import { findUniqueAnchor, parsePatch, type ParsedFilePatch } from '../shared/patch.js';
+import {
+  findUniqueAnchorInLines,
+  parsePatch,
+  sideLines,
+  type ParsedFilePatch,
+  type SideLine,
+} from '../shared/patch.js';
 import type { DiffFilter, NewCommentRequest, ReviewComment } from '../shared/protocol.js';
 import { readJson, writeJsonAtomic } from './fsutil.js';
 import { reviewsPath } from './paths.js';
@@ -96,17 +102,31 @@ export class ReviewStore {
    * match in the same file on the same side; otherwise it becomes outdated.
    * Comments keep their original saved hunk excerpt either way.
    */
-  reanchor(filter: DiffFilter, patch: string, patchHash: string): boolean {
+  reanchor(
+    filter: DiffFilter,
+    patchOrFiles: string | ParsedFilePatch[],
+    patchHash: string,
+  ): boolean {
     const targets = this.comments.filter((c) => c.filter === filter);
     if (targets.length === 0) return false;
 
-    const files = parsePatch(patch);
+    const files = typeof patchOrFiles === 'string' ? parsePatch(patchOrFiles) : patchOrFiles;
     const byPath = new Map<string, ParsedFilePatch>(files.map((f) => [f.path, f]));
+    const linesByPathAndSide = new Map<string, SideLine[]>();
     let changed = false;
 
     for (const comment of targets) {
       const file = byPath.get(comment.path);
-      const newStart = file ? findUniqueAnchor(file, comment.side, comment.anchorText) : null;
+      let newStart: number | null = null;
+      if (file) {
+        const cacheKey = `${comment.path}\u0000${comment.side}`;
+        let lines = linesByPathAndSide.get(cacheKey);
+        if (!lines) {
+          lines = sideLines(file, comment.side);
+          linesByPathAndSide.set(cacheKey, lines);
+        }
+        newStart = findUniqueAnchorInLines(lines, comment.anchorText);
+      }
       const lineCount = comment.endLine - comment.startLine;
       if (newStart !== null) {
         const outdated = false;
