@@ -7,7 +7,7 @@ import { VcsError, type ComputeOptions, type TurnBaseline, type VcsBackend } fro
 const STALE_RETRY_COUNT = 4;
 const STALE_RETRY_BASE_DELAY_MS = 100;
 const DEFAULT_BRANCH_BASE =
-  'coalesce(parents(latest(heads(::@ & bookmarks() & ~::trunk()))), fork_point(trunk() | @))';
+  'coalesce(parents(roots((::@ & ::remote_bookmarks()) & ~::trunk())), parents(latest(heads(::@ & bookmarks() & ~::trunk()))), fork_point(trunk() | @))';
 
 export class JjBackend implements VcsBackend {
   readonly kind = 'jj' as const;

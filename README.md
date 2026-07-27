@@ -153,7 +153,7 @@ Selecting lines updates the URL:
 
 | Source | Git | jj |
 | --- | --- | --- |
-| **Branch** | Merge base of `HEAD` and the base revision through the full index and working tree, including untracked files | Parent of the nearest local branch bookmark through the current working copy; falls back to `fork_point(trunk() \| @)` |
+| **Branch** | Merge base of `HEAD` and the base revision through the full index and working tree, including untracked files | Pushed branch base through the current working copy; falls back to the nearest local bookmark, then `fork_point(trunk() \| @)` |
 | **Unstaged** | Working tree versus index, including untracked-but-unignored files | Current working-copy change (`@`), labeled **Working copy** |
 | **Last turn** | Snapshot tree captured by `dp turn start` versus the current working tree | Working-copy commit captured at turn start versus current `@` |
 
