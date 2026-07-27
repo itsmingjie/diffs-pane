@@ -36,6 +36,7 @@ export interface DaemonServer {
 export interface ServerOptions {
   controlToken: string;
   manager: SessionManager;
+  preferredPort?: number;
 }
 
 export async function startServer(options: ServerOptions): Promise<DaemonServer> {
@@ -337,15 +338,37 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     return `http://127.0.0.1:${port}/s/${token}/`;
   }
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
+  try {
+    await listen(server, options.preferredPort ?? 0);
+  } catch (error) {
+    if (options.preferredPort === undefined || !isAddressInUse(error)) throw error;
+    await listen(server, 0);
+  }
   const address = server.address();
   if (address === null || typeof address === 'string') throw new Error('failed to bind');
   port = address.port;
 
   return { server, port, sessionUrl };
+}
+
+function listen(server: Server, port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off('listening', onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+function isAddressInUse(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error && error.code === 'EADDRINUSE';
 }
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
