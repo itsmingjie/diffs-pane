@@ -69,7 +69,7 @@ describe.skipIf(!hasJj())('JjBackend', () => {
     expect(parsePatch(patch)).toEqual([]);
   });
 
-  it('waits out a transient stale-working-copy state', async () => {
+  it('retries a transient stale-working-copy error', async () => {
     const otherParent = makeTempDir('dp-jj-workspace-');
     const other = join(otherParent, 'other');
     try {
@@ -78,18 +78,18 @@ describe.skipIf(!hasJj())('JjBackend', () => {
       jj(['workspace', 'add', other, '--name', 'other'], dir);
       jj(['restore', '--into', 'default@', '--from', 'root()'], other);
 
-      const recovery = (async () => {
+      const updateWorkspace = (async () => {
         await sleep(150);
         jj(['workspace', 'update-stale'], dir);
       })();
-      const [patch] = await Promise.all([backend.computePatch('unstaged', {}), recovery]);
+      const [patch] = await Promise.all([backend.computePatch('unstaged', {}), updateWorkspace]);
       expect(typeof patch).toBe('string');
     } finally {
       cleanup(otherParent);
     }
   });
 
-  it('skips an obsolete queued command without poisoning the queue', async () => {
+  it('keeps the queue usable after a queued command is aborted', async () => {
     writeFileSyncDeep(join(dir, 'queued.txt'), 'content\n');
     const running = backend.computePatch('unstaged', {});
     const controller = new AbortController();

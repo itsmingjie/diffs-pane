@@ -19,7 +19,7 @@ export class JjBackend implements VcsBackend {
 
   private jj(args: string[], signal?: AbortSignal): Promise<string> {
     const command = this.commandQueue.then(() => this.runJj(args, signal));
-    // Keep the queue usable after either successful or failed commands.
+    // A failed command must not reject the queue tail.
     this.commandQueue = command.then(
       () => undefined,
       () => undefined,
@@ -31,9 +31,8 @@ export class JjBackend implements VcsBackend {
     for (let staleRetries = 0; ; staleRetries++) {
       if (signal?.aborted) throw new ExecError('jj aborted', null, true);
       try {
-        // A snapshotting jj command must reach its working-copy update step.
-        // Killing it midway can leave the workspace stale, so cancellation is
-        // checked before and after the command instead of terminating the child.
+        // Let jj finish updating .jj/working_copy. Killing it after the
+        // snapshot can leave the workspace stale.
         const result = await execFile('jj', ['--color', 'never', '--no-pager', ...args], {
           cwd: this.root,
         });
@@ -43,15 +42,14 @@ export class JjBackend implements VcsBackend {
         if (error instanceof ExecError && !error.aborted) {
           const stderr = error.result?.stderr ?? '';
           if (/stale/i.test(stderr) && /working copy/i.test(stderr)) {
-            // Another jj process can expose a stale state briefly between
-            // recording an operation and updating the working copy.
+            // A concurrent jj command may finish its working-copy update
+            // during this retry window.
             if (staleRetries < STALE_RETRY_COUNT) {
               await waitUnlessAborted(STALE_RETRY_BASE_DELAY_MS * (staleRetries + 1), signal);
               continue;
             }
-            // Never run mutating recovery commands automatically.
             throw new VcsError(
-              'The jj working copy is stale. Run `jj workspace update-stale` manually, then the diff will refresh.',
+              'The jj working copy is stale. Run `jj workspace update-stale` to update it.',
             );
           }
           if (
