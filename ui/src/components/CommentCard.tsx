@@ -94,6 +94,12 @@ function CommentRow({
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && event.metaKey) {
+                event.preventDefault();
+                void save();
+              }
+            }}
             rows={3}
             disabled={busy}
           />
@@ -154,6 +160,12 @@ function DraftForm({
           placeholder="Leave a review comment…"
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && event.metaKey) {
+              event.preventDefault();
+              void submit();
+            }
+          }}
           rows={3}
           disabled={busy}
         />
