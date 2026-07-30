@@ -38,7 +38,7 @@ From any Git or jj working tree:
 
 ```sh
 dp watch
-# http://127.0.0.1:53707/s/<capability-token>/
+# http://127.0.0.1:34337/s/<capability-token>/
 ```
 
 Open the URL once. The viewer updates automatically; there is no need to rerun
