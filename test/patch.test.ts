@@ -5,7 +5,9 @@ import {
   findUniqueAnchor,
   hunkExcerptForRange,
   parsePatch,
+  reconstructOldContents,
   sideLines,
+  splitPatchSections,
   unquoteGitPath,
 } from '../src/shared/patch.js';
 
@@ -116,6 +118,121 @@ describe('unquoteGitPath', () => {
     expect(unquoteGitPath('"a\\"b"')).toBe('a"b');
     expect(unquoteGitPath('"tab\\there"')).toBe('tab\there');
     expect(unquoteGitPath('plain')).toBe('plain');
+  });
+});
+
+describe('splitPatchSections', () => {
+  const MULTI = `diff --git a/one.txt b/one.txt\n--- a/one.txt\n+++ b/one.txt\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/two.txt b/two.txt\nnew file mode 100644\n--- /dev/null\n+++ b/two.txt\n@@ -0,0 +1 @@\n+hello\ndiff --git a/bin.dat b/bin.dat\nBinary files a/bin.dat and b/bin.dat differ\n`;
+
+  it('splits a multi-file patch into sections aligned with parsePatch', () => {
+    const files = parsePatch(MULTI);
+    const sections = splitPatchSections(MULTI);
+    expect(sections).toHaveLength(files.length);
+    sections.forEach((section, index) => {
+      const parsed = parsePatch(section);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]!.path).toBe(files[index]!.path);
+      expect(parsed[0]!.additions).toBe(files[index]!.additions);
+      expect(parsed[0]!.deletions).toBe(files[index]!.deletions);
+    });
+  });
+
+  it('ignores content before the first file header and handles empty input', () => {
+    expect(splitPatchSections('')).toHaveLength(0);
+    expect(splitPatchSections(`preamble\n${MULTI}`)).toHaveLength(3);
+  });
+});
+
+describe('reconstructOldContents', () => {
+  it('rebuilds the base contents from the work tree and hunks', () => {
+    const file = parsePatch(SIMPLE)[0]!;
+    const newContents = 'const a = 1;\nconst b = 3;\nconst c = 4;\nconst d = 5;\n';
+    expect(reconstructOldContents(file, newContents)).toBe(
+      'const a = 1;\nconst b = 2;\nconst c = 4;\nconst d = 5;\n',
+    );
+  });
+
+  it('copies unchanged regions outside hunks from the new contents', () => {
+    const patch = `diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -3,3 +3,4 @@
+ three
+-four
++FOUR
++FOUR.5
+ five
+@@ -9,2 +10,1 @@
+ nine
+-ten
+`;
+    const file = parsePatch(patch)[0]!;
+    const newContents = 'one\ntwo\nthree\nFOUR\nFOUR.5\nfive\nsix\nseven\neight\nnine\n';
+    expect(reconstructOldContents(file, newContents)).toBe(
+      'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n',
+    );
+  });
+
+  it('handles pure-insertion hunks with a zero-count base side', () => {
+    const patch = `diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -2,0 +3,2 @@
++inserted a
++inserted b
+`;
+    const file = parsePatch(patch)[0]!;
+    const newContents = 'one\ntwo\ninserted a\ninserted b\nthree\n';
+    expect(reconstructOldContents(file, newContents)).toBe('one\ntwo\nthree\n');
+  });
+
+  it('returns null when the work tree no longer matches the patch', () => {
+    const file = parsePatch(SIMPLE)[0]!;
+    const drifted = 'const a = 1;\nconst b = 999;\nconst c = 4;\nconst d = 5;\n';
+    expect(reconstructOldContents(file, drifted)).toBeNull();
+  });
+
+  it('preserves a missing trailing newline', () => {
+    const patch = `diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1,2 +1,2 @@
+ keep
+-old tail
++new tail
+`;
+    const file = parsePatch(patch)[0]!;
+    expect(reconstructOldContents(file, 'keep\nnew tail')).toBe('keep\nold tail');
+  });
+
+  it('reconstructs the old side when a final newline was added', () => {
+    const patch = `diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1 +1 @@
+-old
+\\ No newline at end of file
++old
+`;
+    const file = parsePatch(patch)[0]!;
+    expect(file.oldNoNewlineAtEnd).toBe(true);
+    expect(file.newNoNewlineAtEnd).toBe(false);
+    expect(reconstructOldContents(file, 'old\n')).toBe('old');
+  });
+
+  it('reconstructs the old side when a final newline was removed', () => {
+    const patch = `diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1 +1 @@
+-old
++old
+\\ No newline at end of file
+`;
+    const file = parsePatch(patch)[0]!;
+    expect(file.oldNoNewlineAtEnd).toBe(false);
+    expect(file.newNoNewlineAtEnd).toBe(true);
+    expect(reconstructOldContents(file, 'old')).toBe('old\n');
   });
 });
 

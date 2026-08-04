@@ -36,6 +36,12 @@ export interface PatchFileSummary {
   additions: number;
   deletions: number;
   binary: boolean;
+  /**
+   * Hash of this file's raw patch section. Stable while the file's diff is
+   * unchanged, so clients can reuse parsed/rendered state across refreshes.
+   * Optional for rolling upgrades of older daemons.
+   */
+  sectionHash?: string;
 }
 
 export interface PatchPayload {
@@ -82,6 +88,35 @@ export interface NewCommentRequest {
 
 export interface UpdateCommentRequest {
   body: string;
+}
+
+/** Full file contents for one file in a diff, used by edit mode hydration. */
+export interface FileContentsPayload {
+  filter: DiffFilter;
+  path: string;
+  /** Patch hash the contents were validated against. */
+  patchHash: string;
+  /** Base-side contents; null for added files. */
+  oldContents: string | null;
+  /** Current work-tree contents; null for deleted files. */
+  newContents: string | null;
+  /** sha256 of newContents, used as the save concurrency precondition. */
+  newContentsHash: string | null;
+}
+
+/** Body of `PUT api/file`: write edited contents back to the work tree. */
+export interface SaveFileRequest {
+  filter: DiffFilter;
+  path: string;
+  contents: string;
+  /** sha256 returned with the contents this edit session started from. */
+  expectedContentsHash: string;
+}
+
+export interface SaveFileResponse {
+  ok: true;
+  /** sha256 of the contents written, for another save in the same session. */
+  contentsHash: string;
 }
 
 /** SSE `patch` event payload (`comments` events carry `{ comments: ReviewComment[] }`). */

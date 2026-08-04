@@ -1,10 +1,17 @@
+import { readFileSync, symlinkSync, unlinkSync } from 'node:fs';
 import { request, type IncomingMessage } from 'node:http';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { startServer, type DaemonServer } from '../src/daemon/server.js';
 import { SessionManager } from '../src/daemon/sessions.js';
-import type { PatchPayload, ReviewComment, SessionInfo } from '../src/shared/protocol.js';
+import type {
+  FileContentsPayload,
+  PatchPayload,
+  ReviewComment,
+  SaveFileResponse,
+  SessionInfo,
+} from '../src/shared/protocol.js';
 import { cleanup, makeGitRepo, makeTempDir, waitFor, writeFileSyncDeep } from './helpers.js';
 
 const CONTROL_TOKEN = 'test-control-token';
@@ -227,6 +234,98 @@ describe('daemon server', () => {
     const patch = JSON.parse(patchRes.body) as PatchPayload;
     expect(patch.error).toBeNull();
     expect(patch.files.map((f) => f.path)).toContain('src/app.ts');
+    // Section hashes let the UI reuse parsed state for unchanged files.
+    expect(patch.files.every((f) => /^[0-9a-f]{32}$/.test(f.sectionHash ?? ''))).toBe(true);
+  });
+
+  it('hydrates and saves regular files without overwriting concurrent changes', async () => {
+    const origin = `http://127.0.0.1:${daemon.port}`;
+    const filePath = join(repo, 'edit.txt');
+    writeFileSyncDeep(filePath, 'one\n');
+    await waitFor(async () => {
+      const result = await rawRequest(daemon.port, 'GET', `/s/${token}/api/patch?filter=unstaged`);
+      return (JSON.parse(result.body) as PatchPayload).files.some(
+        (file) => file.path === 'edit.txt',
+      );
+    });
+
+    const hydrated = await rawRequest(
+      daemon.port,
+      'GET',
+      `/s/${token}/api/file?filter=unstaged&path=edit.txt`,
+    );
+    expect(hydrated.status).toBe(200);
+    const contents = JSON.parse(hydrated.body) as FileContentsPayload;
+    expect(contents.oldContents).toBeNull();
+    expect(contents.newContents).toBe('one\n');
+    expect(contents.newContentsHash).toMatch(/^[0-9a-f]{64}$/);
+
+    const save = await rawRequest(daemon.port, 'PUT', `/s/${token}/api/file`, {
+      headers: { 'content-type': 'application/json', origin },
+      body: JSON.stringify({
+        filter: 'unstaged',
+        path: 'edit.txt',
+        contents: 'two\n',
+        expectedContentsHash: contents.newContentsHash,
+      }),
+    });
+    expect(save.status).toBe(200);
+    expect((JSON.parse(save.body) as SaveFileResponse).contentsHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(readFileSync(filePath, 'utf8')).toBe('two\n');
+
+    writeFileSyncDeep(filePath, 'external\n');
+    const staleSave = await rawRequest(daemon.port, 'PUT', `/s/${token}/api/file`, {
+      headers: { 'content-type': 'application/json', origin },
+      body: JSON.stringify({
+        filter: 'unstaged',
+        path: 'edit.txt',
+        contents: 'three\n',
+        expectedContentsHash: contents.newContentsHash,
+      }),
+    });
+    expect(staleSave.status).toBe(409);
+    expect(readFileSync(filePath, 'utf8')).toBe('external\n');
+  });
+
+  it('rejects symlinked files in edit endpoints', async () => {
+    const outside = join(stateDir, 'outside.txt');
+    const link = join(repo, 'outside-link.txt');
+    writeFileSyncDeep(outside, 'private\n');
+    symlinkSync(outside, link);
+    try {
+      await waitFor(async () => {
+        const result = await rawRequest(
+          daemon.port,
+          'GET',
+          `/s/${token}/api/patch?filter=unstaged`,
+        );
+        return (JSON.parse(result.body) as PatchPayload).files.some(
+          (file) => file.path === 'outside-link.txt',
+        );
+      });
+      const result = await rawRequest(
+        daemon.port,
+        'GET',
+        `/s/${token}/api/file?filter=unstaged&path=outside-link.txt`,
+      );
+      expect(result.status).toBe(422);
+      const save = await rawRequest(daemon.port, 'PUT', `/s/${token}/api/file`, {
+        headers: {
+          'content-type': 'application/json',
+          origin: `http://127.0.0.1:${daemon.port}`,
+        },
+        body: JSON.stringify({
+          filter: 'unstaged',
+          path: 'outside-link.txt',
+          contents: 'overwritten\n',
+          expectedContentsHash: '0'.repeat(64),
+        }),
+      });
+      expect(save.status).toBe(422);
+      expect(readFileSync(outside, 'utf8')).toBe('private\n');
+    } finally {
+      unlinkSync(link);
+    }
   });
 
   it('supports the full comment lifecycle with saved hunk excerpts', async () => {

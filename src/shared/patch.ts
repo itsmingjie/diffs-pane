@@ -31,6 +31,9 @@ export interface ParsedFilePatch {
   binary: boolean;
   additions: number;
   deletions: number;
+  /** The patch explicitly marks this side as missing its final newline. */
+  oldNoNewlineAtEnd: boolean;
+  newNoNewlineAtEnd: boolean;
   hunks: ParsedHunk[];
   /** Raw text of this file's whole patch section. */
   raw: string;
@@ -165,6 +168,8 @@ export function parsePatch(patch: string): ParsedFilePatch[] {
     let newFile = false;
     let deletedFile = false;
     let binary = false;
+    let oldNoNewlineAtEnd = false;
+    let newNoNewlineAtEnd = false;
 
     // Extended headers until first hunk or next file.
     while (i < lines.length && !lines[i]!.startsWith('diff --git ') && !HUNK_RE.test(lines[i]!)) {
@@ -200,8 +205,13 @@ export function parsePatch(patch: string): ParsedFilePatch[] {
         const line = lines[i]!;
         if (line.startsWith('diff --git ') || HUNK_RE.test(line)) break;
         if (line.startsWith('\\')) {
+          ({ oldNoNewlineAtEnd, newNoNewlineAtEnd } = markNoNewline(
+            hunkLines[hunkLines.length - 1],
+            oldNoNewlineAtEnd,
+            newNoNewlineAtEnd,
+          ));
           i++;
-          continue; // "\ No newline at end of file"
+          continue;
         }
         const origin = line[0];
         if (origin === '+') {
@@ -226,8 +236,15 @@ export function parsePatch(patch: string): ParsedFilePatch[] {
         }
         i++;
       }
-      // Skip a trailing "\ No newline" marker that follows the last line.
-      while (i < lines.length && lines[i]!.startsWith('\\')) i++;
+      // A marker commonly follows after both hunk counts reach zero.
+      while (i < lines.length && lines[i]!.startsWith('\\')) {
+        ({ oldNoNewlineAtEnd, newNoNewlineAtEnd } = markNoNewline(
+          hunkLines[hunkLines.length - 1],
+          oldNoNewlineAtEnd,
+          newNoNewlineAtEnd,
+        ));
+        i++;
+      }
       hunks.push({
         header: hunkHeader,
         lines: hunkLines,
@@ -261,11 +278,27 @@ export function parsePatch(patch: string): ParsedFilePatch[] {
       binary,
       additions,
       deletions,
+      oldNoNewlineAtEnd,
+      newNoNewlineAtEnd,
       hunks,
       raw: lines.slice(start, i).join('\n'),
     });
   }
   return files;
+}
+
+function markNoNewline(
+  previous: ParsedPatchLine | undefined,
+  oldMissing: boolean,
+  newMissing: boolean,
+): { oldNoNewlineAtEnd: boolean; newNoNewlineAtEnd: boolean } {
+  if (!previous) {
+    return { oldNoNewlineAtEnd: oldMissing, newNoNewlineAtEnd: newMissing };
+  }
+  return {
+    oldNoNewlineAtEnd: oldMissing || previous.origin !== '+',
+    newNoNewlineAtEnd: newMissing || previous.origin !== '-',
+  };
 }
 
 function parseFileLine(raw: string): string | undefined {
@@ -283,6 +316,75 @@ export function summarizeFiles(files: ParsedFilePatch[]): PatchFileSummary[] {
     deletions: f.deletions,
     binary: f.binary,
   }));
+}
+
+/**
+ * Split a multi-file git patch into per-file sections, in file order.
+ * Sections align with `parsePatch` output: both key on `diff --git ` line
+ * starts, which cannot appear inside hunk content (hunk lines are prefixed).
+ */
+export function splitPatchSections(patch: string): string[] {
+  const lines = patch.split('\n');
+  const starts: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]!.startsWith('diff --git ')) starts.push(i);
+  }
+  return starts.map((start, index) => {
+    const end = index + 1 < starts.length ? starts[index + 1]! : lines.length;
+    const section = lines.slice(start, end).join('\n');
+    return section.endsWith('\n') ? section : `${section}\n`;
+  });
+}
+
+/**
+ * Rebuild the base-side contents of a changed file from its current
+ * work-tree contents plus the parsed hunks. Returns null when the work tree
+ * no longer matches the patch (context or added lines differ), which callers
+ * should treat as "retry once the patch refreshes".
+ */
+export function reconstructOldContents(file: ParsedFilePatch, newContents: string): string | null {
+  if (file.binary) return null;
+  const newLines = newContents.split('\n');
+  const newTrailingNewline = newLines.length > 1 && newLines[newLines.length - 1] === '';
+  if (newLines[newLines.length - 1] === '') newLines.pop();
+
+  const oldLines: string[] = [];
+  let nextNew = 1; // 1-based next unconsumed new-side line.
+  for (const hunk of file.hunks) {
+    const m = HUNK_RE.exec(hunk.header);
+    if (!m) return null;
+    const newStart = parseInt(m[3]!, 10);
+    const newCount = m[4] !== undefined ? parseInt(m[4]!, 10) : 1;
+    // With a zero new-side count the header start is the line before the hunk.
+    const hunkFirstNew = newCount === 0 ? newStart + 1 : newStart;
+    if (hunkFirstNew < nextNew) return null;
+    while (nextNew < hunkFirstNew) {
+      const text = newLines[nextNew - 1];
+      if (text === undefined) return null;
+      oldLines.push(text);
+      nextNew++;
+    }
+    for (const line of hunk.lines) {
+      if (line.origin === '-') {
+        oldLines.push(line.text);
+        continue;
+      }
+      if (newLines[nextNew - 1] !== line.text) return null;
+      if (line.origin === ' ') oldLines.push(line.text);
+      nextNew++;
+    }
+  }
+  while (nextNew <= newLines.length) {
+    oldLines.push(newLines[nextNew - 1]!);
+    nextNew++;
+  }
+  if (oldLines.length === 0) return '';
+  const oldTrailingNewline = file.oldNoNewlineAtEnd
+    ? false
+    : file.newNoNewlineAtEnd
+      ? true
+      : newTrailingNewline;
+  return oldTrailingNewline ? `${oldLines.join('\n')}\n` : oldLines.join('\n');
 }
 
 export interface SideLine {

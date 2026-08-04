@@ -1,9 +1,12 @@
 import type {
   DiffFilter,
+  FileContentsPayload,
   NewCommentRequest,
   PatchChangedEvent,
   PatchPayload,
   ReviewComment,
+  SaveFileRequest,
+  SaveFileResponse,
   SessionInfo,
 } from '../../src/shared/protocol';
 
@@ -35,6 +38,20 @@ export function fetchSession(): Promise<SessionInfo> {
 
 export function fetchPatch(filter: DiffFilter): Promise<PatchPayload> {
   return json<PatchPayload>(`api/patch?filter=${filter}`);
+}
+
+/** Full old/new contents for one diffed file (edit-mode hydration). */
+export function fetchFileContents(filter: DiffFilter, path: string): Promise<FileContentsPayload> {
+  return json<FileContentsPayload>(`api/file?filter=${filter}&path=${encodeURIComponent(path)}`);
+}
+
+/** Write edited contents back to the work-tree file. */
+export function saveFile(request: SaveFileRequest): Promise<SaveFileResponse> {
+  return json<SaveFileResponse>('api/file', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
 }
 
 export function createComment(request: NewCommentRequest): Promise<ReviewComment> {
