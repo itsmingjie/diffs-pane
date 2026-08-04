@@ -319,6 +319,24 @@ export function summarizeFiles(files: ParsedFilePatch[]): PatchFileSummary[] {
 }
 
 /**
+ * Split a multi-file git patch into per-file sections, in file order.
+ * Sections align with `parsePatch` output: both key on `diff --git ` line
+ * starts, which cannot appear inside hunk content (hunk lines are prefixed).
+ */
+export function splitPatchSections(patch: string): string[] {
+  const lines = patch.split('\n');
+  const starts: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]!.startsWith('diff --git ')) starts.push(i);
+  }
+  return starts.map((start, index) => {
+    const end = index + 1 < starts.length ? starts[index + 1]! : lines.length;
+    const section = lines.slice(start, end).join('\n');
+    return section.endsWith('\n') ? section : `${section}\n`;
+  });
+}
+
+/**
  * Rebuild the base-side contents of a changed file from its current
  * work-tree contents plus the parsed hunks. Returns null when the work tree
  * no longer matches the patch (context or added lines differ), which callers

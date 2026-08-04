@@ -241,7 +241,13 @@ export class Session {
         filter,
         patchHash: sha256(patch),
         patch,
-        files: summarizeFiles(parsedFiles),
+        // Per-file hashes let the UI reuse parsed and rendered state for
+        // files whose section did not change in a refresh.
+        files: summarizeFiles(parsedFiles).map((summary, index) =>
+          Object.assign(summary, {
+            sectionHash: sha256(parsedFiles[index]!.raw).slice(0, 32),
+          }),
+        ),
         error: null,
         generatedAt,
       };

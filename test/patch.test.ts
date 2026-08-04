@@ -7,6 +7,7 @@ import {
   parsePatch,
   reconstructOldContents,
   sideLines,
+  splitPatchSections,
   unquoteGitPath,
 } from '../src/shared/patch.js';
 
@@ -117,6 +118,28 @@ describe('unquoteGitPath', () => {
     expect(unquoteGitPath('"a\\"b"')).toBe('a"b');
     expect(unquoteGitPath('"tab\\there"')).toBe('tab\there');
     expect(unquoteGitPath('plain')).toBe('plain');
+  });
+});
+
+describe('splitPatchSections', () => {
+  const MULTI = `diff --git a/one.txt b/one.txt\n--- a/one.txt\n+++ b/one.txt\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/two.txt b/two.txt\nnew file mode 100644\n--- /dev/null\n+++ b/two.txt\n@@ -0,0 +1 @@\n+hello\ndiff --git a/bin.dat b/bin.dat\nBinary files a/bin.dat and b/bin.dat differ\n`;
+
+  it('splits a multi-file patch into sections aligned with parsePatch', () => {
+    const files = parsePatch(MULTI);
+    const sections = splitPatchSections(MULTI);
+    expect(sections).toHaveLength(files.length);
+    sections.forEach((section, index) => {
+      const parsed = parsePatch(section);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]!.path).toBe(files[index]!.path);
+      expect(parsed[0]!.additions).toBe(files[index]!.additions);
+      expect(parsed[0]!.deletions).toBe(files[index]!.deletions);
+    });
+  });
+
+  it('ignores content before the first file header and handles empty input', () => {
+    expect(splitPatchSections('')).toHaveLength(0);
+    expect(splitPatchSections(`preamble\n${MULTI}`)).toHaveLength(3);
   });
 });
 

@@ -46,6 +46,7 @@ import {
   type DiffAnnotation,
   type DraftComment,
 } from './annotations';
+import { splitPatchSections } from '../../src/shared/patch';
 import { CommentCard } from './components/CommentCard';
 import { Sidebar } from './components/Sidebar';
 import { Toolbar, type ViewSettings } from './components/Toolbar';
@@ -135,6 +136,8 @@ const KIND_BADGE: Record<PatchFileSummary['kind'], string> = {
 interface ParsedFile {
   path: string;
   fileDiff: FileDiffMetadata;
+  /** Identity of this file's patch section; whole-patch hash as fallback. */
+  sectionHash: string;
 }
 
 /** One live per-file edit session. Its item stays frozen across patch
@@ -317,16 +320,47 @@ export function App() {
   }, [activeFilter]);
 
   // ── Parse the patch with @pierre/diffs ───────────────────────────────
+  // Parsed sections survive refreshes so unchanged files keep their object
+  // identity, and with it worker AST caches, hydrated context, and versions.
+  const parsedFileCacheRef = useRef(new Map<string, FileDiffMetadata>());
   const parsedFiles = useMemo<ParsedFile[]>(() => {
     if (!patch || patch.patch === '') return [];
-    const parsed = parsePatchFiles(patch.patch, patch.patchHash.slice(0, 16));
-    const fileDiffs = parsed.flatMap((p) => p.files);
-    // Server summaries and parsed files come from the same patch in the same
-    // order; pair them so path identifiers match the sidebar exactly.
-    return fileDiffs.map((fileDiff, index) => ({
-      path: patch.files[index]?.path ?? fileDiff.name,
-      fileDiff,
-    }));
+    // Server summaries and patch sections come from the same patch in the
+    // same order; pair them so path identifiers match the sidebar exactly.
+    const summaries = patch.files;
+    const sections = splitPatchSections(patch.patch);
+    const sectioned =
+      sections.length === summaries.length &&
+      summaries.every((summary) => summary.sectionHash !== undefined);
+    if (!sectioned) {
+      // Older daemons don't send section hashes; reparse the whole patch.
+      const fileDiffs = parsePatchFiles(patch.patch, patch.patchHash.slice(0, 16)).flatMap(
+        (parsed) => parsed.files,
+      );
+      return fileDiffs.map((fileDiff, index) => ({
+        path: summaries[index]?.path ?? fileDiff.name,
+        fileDiff,
+        sectionHash: patch.patchHash,
+      }));
+    }
+    const cache = parsedFileCacheRef.current;
+    const next = new Map<string, FileDiffMetadata>();
+    const out: ParsedFile[] = [];
+    summaries.forEach((summary, index) => {
+      const sectionHash = summary.sectionHash!;
+      const key = `${summary.path}|${sectionHash}`;
+      const fileDiff =
+        next.get(key) ??
+        cache.get(key) ??
+        parsePatchFiles(sections[index]!, sectionHash.slice(0, 16)).flatMap(
+          (parsed) => parsed.files,
+        )[0];
+      if (!fileDiff) return;
+      next.set(key, fileDiff);
+      out.push({ path: summary.path, fileDiff, sectionHash });
+    });
+    parsedFileCacheRef.current = next;
+    return out;
   }, [patch]);
 
   const filesByPath = useMemo(
@@ -355,8 +389,7 @@ export function App() {
 
   const versionsRef = useRef(new Map<string, { version: number; key: string }>());
   const items = useMemo<CodeViewItem<AnnotationMeta>[]>(() => {
-    const hash = patch?.patchHash ?? '';
-    return parsedFiles.map(({ path, fileDiff }) => {
+    return parsedFiles.map(({ path, fileDiff, sectionHash }) => {
       const id = `f:${path}`;
       const editSession = editSessions.get(path);
       const annotations = editSession
@@ -365,7 +398,7 @@ export function App() {
       const collapsed = editSession === undefined && collapsedPaths.has(path);
       const key = editSession
         ? `edit|${editSession.rev}|${dirtyPaths.has(path) ? 1 : 0}`
-        : `${hash}|${collapsed ? 1 : 0}|${annotationsKey(annotations)}`;
+        : `${sectionHash}|${collapsed ? 1 : 0}|${annotationsKey(annotations)}`;
       const entry = versionsRef.current.get(id);
       let version = entry?.version ?? 1;
       if (!entry || entry.key !== key) {
@@ -382,7 +415,7 @@ export function App() {
         edit: editSession !== undefined,
       };
     });
-  }, [parsedFiles, annotationsByPath, collapsedPaths, patch?.patchHash, editSessions, dirtyPaths]);
+  }, [parsedFiles, annotationsByPath, collapsedPaths, editSessions, dirtyPaths]);
 
   // Restore a line permalink once its target file is in the rendered patch.
   useEffect(() => {

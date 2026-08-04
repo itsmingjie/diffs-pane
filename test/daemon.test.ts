@@ -234,6 +234,8 @@ describe('daemon server', () => {
     const patch = JSON.parse(patchRes.body) as PatchPayload;
     expect(patch.error).toBeNull();
     expect(patch.files.map((f) => f.path)).toContain('src/app.ts');
+    // Section hashes let the UI reuse parsed state for unchanged files.
+    expect(patch.files.every((f) => /^[0-9a-f]{32}$/.test(f.sectionHash ?? ''))).toBe(true);
   });
 
   it('hydrates and saves regular files without overwriting concurrent changes', async () => {
