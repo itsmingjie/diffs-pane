@@ -19,7 +19,15 @@ import {
   type CodeViewHandle,
   type CreateEditor,
 } from '@pierre/diffs/react';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import { flushSync } from 'react-dom';
 
 import type {
@@ -73,6 +81,10 @@ const EDITOR_OPTIONS: Omit<EditorOptions<AnnotationMeta>, 'onChange'> = {
 const IS_MAC = /Mac|iP/.test(navigator.platform);
 const SAVE_SHORTCUT_LABEL = IS_MAC ? '⌘S' : 'Ctrl+S';
 
+/** Safety window for a post-save patch refresh. User scroll gestures release
+ * the pin immediately. */
+const SCROLL_ANCHOR_WINDOW_MS = 5000;
+
 const KIND_BADGE: Record<PatchFileSummary['kind'], string> = {
   added: 'A',
   modified: 'M',
@@ -124,6 +136,18 @@ export function App() {
   const viewerRef = useRef<CodeViewHandle<AnnotationMeta> | null>(null);
   /** Latest edited contents per path, fed by onItemEditChange. */
   const editedFilesRef = useRef(new Map<string, FileContents>());
+  /** Viewport pin captured when an edit session ends, held across the exit
+   * re-render and the follow-up patch refresh. */
+  const scrollAnchorRef = useRef<{
+    /** Item at the top of the viewport when the session ended. */
+    id?: string;
+    /** scrollTop relative to that item's top; NaN when no item was measured. */
+    offset: number;
+    scrollTop: number;
+    patchHash: string;
+    waitForPatch: boolean;
+    until: number;
+  } | null>(null);
   const patchHashRef = useRef<string | null>(null);
   const pendingHashTargetRef = useRef<CodeViewLineSelection | null>(
     parseLineHash(window.location.hash),
@@ -339,6 +363,77 @@ export function App() {
   });
 
   // ── Edit mode ────────────────────────────────────────────────────────
+  /** Pin the viewport to its current top item and intra-item offset. */
+  const captureScrollAnchor = useStableCallback((waitForPatch: boolean) => {
+    const instance = viewerRef.current?.getInstance();
+    if (!instance) return;
+    const scrollTop = instance.getScrollTop();
+    let id: string | undefined;
+    let itemTop: number | undefined;
+    for (const item of items) {
+      const top = instance.getTopForItem(item.id);
+      if (top === undefined || top > scrollTop || (itemTop !== undefined && top <= itemTop)) {
+        continue;
+      }
+      id = item.id;
+      itemTop = top;
+    }
+    scrollAnchorRef.current = {
+      id,
+      offset: itemTop === undefined ? Number.NaN : scrollTop - itemTop,
+      scrollTop,
+      patchHash: patch?.patchHash ?? '',
+      waitForPatch,
+      until: Date.now() + SCROLL_ANCHOR_WINDOW_MS,
+    };
+  });
+
+  const restoreScrollAnchor = useStableCallback(() => {
+    const anchor = scrollAnchorRef.current;
+    const instance = viewerRef.current?.getInstance();
+    if (!anchor || !instance) return;
+    const itemTop =
+      anchor.id === undefined || Number.isNaN(anchor.offset)
+        ? undefined
+        : instance.getTopForItem(anchor.id);
+    const position = itemTop === undefined ? anchor.scrollTop : itemTop + anchor.offset;
+    if (Math.abs(instance.getScrollTop() - position) < 1) return;
+    instance.scrollTo({ type: 'position', position, behavior: 'instant' });
+  });
+
+  // Re-pin the viewport whenever the items rebuild while an anchor is live:
+  // once when the session exits, and again when the saved patch arrives.
+  useLayoutEffect(() => {
+    const anchor = scrollAnchorRef.current;
+    if (!anchor) return;
+    if (Date.now() > anchor.until) {
+      scrollAnchorRef.current = null;
+      return;
+    }
+    restoreScrollAnchor();
+    const patchArrived =
+      anchor.waitForPatch && patch !== null && patch.patchHash !== anchor.patchHash;
+    // The virtualizer can re-measure after paint; correct once more.
+    const frame = requestAnimationFrame(() => {
+      restoreScrollAnchor();
+      if (!anchor.waitForPatch || patchArrived) scrollAnchorRef.current = null;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [items, patch, restoreScrollAnchor]);
+
+  // A real user scroll gesture releases the pin immediately.
+  useEffect(() => {
+    const release = () => {
+      scrollAnchorRef.current = null;
+    };
+    window.addEventListener('wheel', release, { passive: true });
+    window.addEventListener('touchmove', release, { passive: true });
+    return () => {
+      window.removeEventListener('wheel', release);
+      window.removeEventListener('touchmove', release);
+    };
+  }, []);
+
   const startEditing = useStableCallback((path: string) => {
     if (editSessions.has(path)) return;
     const parsed = parsedFiles.find((file) => file.path === path);
@@ -356,7 +451,8 @@ export function App() {
   });
 
   /** End a session without saving (also used after a successful save). */
-  const stopEditing = useStableCallback((path: string) => {
+  const stopEditing = useStableCallback((path: string, waitForPatch = false) => {
+    captureScrollAnchor(waitForPatch);
     editedFilesRef.current.delete(path);
     setEditSessions((prev) => {
       if (!prev.has(path)) return prev;
@@ -376,10 +472,11 @@ export function App() {
     setSaveError(null);
     try {
       const file = editedFilesRef.current.get(path);
-      if (dirtyPaths.has(path) && file) {
+      const saved = dirtyPaths.has(path) && file !== undefined;
+      if (saved) {
         await api.saveFile({ filter: activeFilter, path, contents: file.contents });
       }
-      stopEditing(path);
+      stopEditing(path, saved);
     } catch (error) {
       setSaveError(
         `Failed to save ${path}: ${error instanceof Error ? error.message : String(error)}`,
