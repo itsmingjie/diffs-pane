@@ -36,6 +36,12 @@ export interface PatchFileSummary {
   additions: number;
   deletions: number;
   binary: boolean;
+  /**
+   * Hash of this file's raw patch section. Stable while the file's diff is
+   * unchanged, so clients can reuse parsed/rendered state across refreshes.
+   * Optional for rolling upgrades of older daemons.
+   */
+  sectionHash?: string;
 }
 
 export interface PatchPayload {
