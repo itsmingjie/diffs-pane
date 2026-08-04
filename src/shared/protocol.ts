@@ -84,6 +84,25 @@ export interface UpdateCommentRequest {
   body: string;
 }
 
+/** Full file contents for one file in a diff, used by edit mode hydration. */
+export interface FileContentsPayload {
+  filter: DiffFilter;
+  path: string;
+  /** Patch hash the contents were validated against. */
+  patchHash: string;
+  /** Base-side contents; null for added files. */
+  oldContents: string | null;
+  /** Current work-tree contents; null for deleted files. */
+  newContents: string | null;
+}
+
+/** Body of `PUT api/file`: write edited contents back to the work tree. */
+export interface SaveFileRequest {
+  filter: DiffFilter;
+  path: string;
+  contents: string;
+}
+
 /** SSE `patch` event payload (`comments` events carry `{ comments: ReviewComment[] }`). */
 export interface PatchChangedEvent {
   filter: DiffFilter;
