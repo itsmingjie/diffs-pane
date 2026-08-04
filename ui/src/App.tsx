@@ -68,6 +68,16 @@ const CODE_VIEW_UNSAFE_CSS = `
     background: var(--diffs-bg);
     pointer-events: none;
   }
+
+  /* Review controls do not apply while the new side is an editor. */
+  [data-diff]:has([data-content][contenteditable='true']) [data-gutter-utility-slot] {
+    display: none !important;
+  }
+
+  [data-diff]:has([data-content][contenteditable='true']) :is([data-column-number], [data-gutter-buffer]) {
+    cursor: default;
+    pointer-events: none;
+  }
 `;
 
 interface EditModule {
@@ -391,6 +401,10 @@ export function App() {
 
   // ── Selection & permalinks ───────────────────────────────────────────
   const handleSelectedLinesChange = useStableCallback((selection: CodeViewLineSelection | null) => {
+    if (selection && editSessions.has(selection.id.slice(2))) {
+      viewerRef.current?.clearSelectedLines();
+      return;
+    }
     setSelectedLines(selection);
     syncLineHash(selection);
   });
@@ -527,7 +541,8 @@ export function App() {
       ) {
         return;
       }
-      // Comment drafts don't carry into an edit session.
+      // Review selections and comment drafts don't carry into an edit session.
+      if (selectedLines?.id === `f:${path}`) handleSelectedLinesChange(null);
       setDraft((current) => (current?.path === path ? null : current));
       const annotations = (annotationsByPath.get(path) ?? []).filter(
         (annotation) => annotation.metadata.kind !== 'draft',
