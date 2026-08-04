@@ -79,6 +79,13 @@ async function loadEditModule(): Promise<EditModule> {
   }
 }
 
+/** Older live daemon processes do not include content hashes in file API
+ * responses. Compute the same sha256 in the browser during rolling upgrades. */
+async function hashContents(contents: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(contents));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 /** One stable provider factory; edit sessions start only after the module loads. */
 const createEditor: CreateEditor<AnnotationMeta> = (options) => {
   if (!editModule) throw new Error('Editor module has not loaded');
@@ -503,8 +510,9 @@ export function App() {
       const annotations = (annotationsByPath.get(path) ?? []).filter(
         (annotation) => annotation.metadata.kind !== 'draft',
       );
-      const contentsHash = fileContents.newContentsHash;
-      if (!contentsHash) throw new Error('file has no editable contents');
+      if (fileContents.newContents === null) throw new Error('file has no editable contents');
+      const contentsHash =
+        fileContents.newContentsHash ?? (await hashContents(fileContents.newContents));
       expectedContentsHashesRef.current.set(path, contentsHash);
       editRevisionsRef.current.set(path, 0);
       setEditSessions((prev) =>
@@ -560,7 +568,10 @@ export function App() {
           contents: file.contents,
           expectedContentsHash,
         });
-        expectedContentsHashesRef.current.set(path, result.contentsHash);
+        expectedContentsHashesRef.current.set(
+          path,
+          result.contentsHash ?? (await hashContents(file.contents)),
+        );
       }
       const latestFile = editedFilesRef.current.get(path);
       const unchangedDuringSave =
