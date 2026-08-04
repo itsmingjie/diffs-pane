@@ -869,6 +869,80 @@ body,
   color: var(--text-dim);
 }
 
+/* ── Edit mode header controls ────────────────────── */
+.collapse-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.collapse-button:disabled:hover {
+  color: var(--text-dim);
+  background: transparent;
+}
+
+.edit-file-button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.edit-file-button:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.edit-file-button > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.file-edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.file-edit-actions .dirty-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-modified);
+}
+
+.edit-action {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.edit-action:hover {
+  border-color: color-mix(in srgb, var(--text) 30%, transparent);
+}
+
+.edit-action.save {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.edit-action.save:hover {
+  filter: brightness(1.08);
+}
+
 /* ── Comment cards (inline annotations) ─────────────────── */
 .comment-card {
   margin: 4px 8px;

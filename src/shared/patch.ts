@@ -285,6 +285,55 @@ export function summarizeFiles(files: ParsedFilePatch[]): PatchFileSummary[] {
   }));
 }
 
+/**
+ * Rebuild the base-side contents of a changed file from its current
+ * work-tree contents plus the parsed hunks. Returns null when the work tree
+ * no longer matches the patch (context or added lines differ), which callers
+ * should treat as "retry once the patch refreshes".
+ */
+export function reconstructOldContents(
+  file: ParsedFilePatch,
+  newContents: string,
+): string | null {
+  if (file.binary) return null;
+  const newLines = newContents.split('\n');
+  const trailingNewline = newLines.length > 1 && newLines[newLines.length - 1] === '';
+  if (newLines[newLines.length - 1] === '') newLines.pop();
+
+  const oldLines: string[] = [];
+  let nextNew = 1; // 1-based next unconsumed new-side line.
+  for (const hunk of file.hunks) {
+    const m = HUNK_RE.exec(hunk.header);
+    if (!m) return null;
+    const newStart = parseInt(m[3]!, 10);
+    const newCount = m[4] !== undefined ? parseInt(m[4]!, 10) : 1;
+    // With a zero new-side count the header start is the line before the hunk.
+    const hunkFirstNew = newCount === 0 ? newStart + 1 : newStart;
+    if (hunkFirstNew < nextNew) return null;
+    while (nextNew < hunkFirstNew) {
+      const text = newLines[nextNew - 1];
+      if (text === undefined) return null;
+      oldLines.push(text);
+      nextNew++;
+    }
+    for (const line of hunk.lines) {
+      if (line.origin === '-') {
+        oldLines.push(line.text);
+        continue;
+      }
+      if (newLines[nextNew - 1] !== line.text) return null;
+      if (line.origin === ' ') oldLines.push(line.text);
+      nextNew++;
+    }
+  }
+  while (nextNew <= newLines.length) {
+    oldLines.push(newLines[nextNew - 1]!);
+    nextNew++;
+  }
+  if (oldLines.length === 0) return '';
+  return trailingNewline ? `${oldLines.join('\n')}\n` : oldLines.join('\n');
+}
+
 export interface SideLine {
   line: number;
   text: string;

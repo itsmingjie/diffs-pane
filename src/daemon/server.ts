@@ -1,12 +1,20 @@
 import { createReadStream, existsSync, statSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { extname, join, normalize } from 'node:path';
+import { extname, isAbsolute, join, normalize, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { anchorTextForRange, hunkExcerptForRange, parsePatch } from '../shared/patch.js';
+import {
+  anchorTextForRange,
+  hunkExcerptForRange,
+  parsePatch,
+  reconstructOldContents,
+} from '../shared/patch.js';
 import {
   isDiffFilter,
+  type FileContentsPayload,
   type NewCommentRequest,
+  type SaveFileRequest,
   type StatusExport,
   type UpdateCommentRequest,
 } from '../shared/protocol.js';
@@ -14,6 +22,9 @@ import { checkMutationOrigin, checkTransport, readBody } from './security.js';
 import { type SessionManager, timingSafeEqualString, DEFAULT_OWNER } from './sessions.js';
 
 const UI_DIR = fileURLToPath(new URL('../ui', import.meta.url));
+
+/** Body cap for `PUT api/file` saves; matches the daemon patch size limit. */
+const MAX_SAVE_BODY_BYTES = 24 * 1024 * 1024;
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -149,6 +160,10 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       return sendJson(res, 201, comment);
     }
 
+    if (subPath === '/api/file' && (method === 'GET' || method === 'PUT')) {
+      return handleFile(req, res, url, method, session);
+    }
+
     const commentMatch = /^\/api\/comments\/([A-Za-z0-9-]+)$/.exec(subPath);
     if (commentMatch) {
       const id = commentMatch[1]!;
@@ -172,6 +187,75 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
 
     if (method === 'GET' || method === 'HEAD') return serveStatic(res, subPath);
     sendJson(res, 405, { error: 'method not allowed' });
+  }
+
+  /** Edit-mode support: read full file contents and save edited contents. */
+  async function handleFile(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+    method: string,
+    session: SessionType,
+  ): Promise<void> {
+    if (method === 'GET') {
+      const filter = url.searchParams.get('filter') ?? session.defaultFilter;
+      if (!isDiffFilter(filter)) return sendJson(res, 400, { error: `invalid filter: ${filter}` });
+      const path = url.searchParams.get('path');
+      if (!path) return sendJson(res, 400, { error: 'path is required' });
+
+      const patch = await session.getPatch(filter);
+      const file = parsePatch(patch.patch).find((f) => f.path === path);
+      if (!file) return sendJson(res, 404, { error: `file not in ${filter} diff: ${path}` });
+      if (file.binary || file.kind === 'deleted') {
+        return sendJson(res, 422, { error: 'file has no editable text contents' });
+      }
+      const abs = resolveWorkTreePath(session.root, path);
+      if (!abs) return sendJson(res, 400, { error: `invalid path: ${path}` });
+
+      let newContents: string;
+      try {
+        newContents = await readFile(abs, 'utf8');
+      } catch {
+        return sendJson(res, 409, { error: 'file changed on disk; retry after refresh' });
+      }
+      let oldContents: string | null = null;
+      if (file.kind !== 'added') {
+        oldContents = reconstructOldContents(file, newContents);
+        if (oldContents === null) {
+          return sendJson(res, 409, {
+            error: 'work tree changed since the diff was computed; retry after refresh',
+          });
+        }
+      }
+      const payload: FileContentsPayload = {
+        filter,
+        path,
+        patchHash: patch.patchHash,
+        oldContents,
+        newContents,
+      };
+      return sendJson(res, 200, payload);
+    }
+
+    // PUT: save edited contents back to the work tree.
+    const body = await parseJsonBody<SaveFileRequest>(req, MAX_SAVE_BODY_BYTES);
+    if (!body || typeof body.path !== 'string' || typeof body.contents !== 'string') {
+      return sendJson(res, 400, { error: 'path and contents are required' });
+    }
+    if (!isDiffFilter(body.filter)) return sendJson(res, 400, { error: 'invalid filter' });
+    const summary = (await session.getPatch(body.filter)).files.find(
+      (f) => f.path === body.path,
+    );
+    if (!summary) {
+      return sendJson(res, 422, { error: `file not in ${body.filter} diff: ${body.path}` });
+    }
+    if (summary.binary || summary.kind === 'deleted') {
+      return sendJson(res, 422, { error: 'file is not editable' });
+    }
+    const abs = resolveWorkTreePath(session.root, body.path);
+    if (!abs) return sendJson(res, 400, { error: `invalid path: ${body.path}` });
+    await writeFile(abs, body.contents, 'utf8');
+    return sendJson(res, 200, { ok: true });
   }
 
   async function handleControl(
@@ -371,6 +455,17 @@ function isAddressInUse(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && 'code' in error && error.code === 'EADDRINUSE';
 }
 
+/** Resolve a diff-relative path inside the session root, rejecting escapes. */
+function resolveWorkTreePath(root: string, relPath: string): string | null {
+  if (relPath === '' || relPath.includes('\0') || isAbsolute(relPath)) return null;
+  const rootAbs = resolvePath(root);
+  const abs = resolvePath(rootAbs, relPath);
+  if (abs === rootAbs || !abs.startsWith(rootAbs.endsWith(sep) ? rootAbs : rootAbs + sep)) {
+    return null;
+  }
+  return abs;
+}
+
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
   const body = JSON.stringify(value);
   res.writeHead(status, {
@@ -381,9 +476,9 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
   res.end(body);
 }
 
-async function parseJsonBody<T>(req: IncomingMessage): Promise<T | null> {
+async function parseJsonBody<T>(req: IncomingMessage, maxBytes?: number): Promise<T | null> {
   try {
-    const raw = await readBody(req);
+    const raw = await readBody(req, maxBytes);
     if (raw.length === 0) return {} as T;
     return JSON.parse(raw.toString('utf8')) as T;
   } catch {

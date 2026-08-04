@@ -5,6 +5,7 @@ import {
   findUniqueAnchor,
   hunkExcerptForRange,
   parsePatch,
+  reconstructOldContents,
   sideLines,
   unquoteGitPath,
 } from '../src/shared/patch.js';
@@ -116,6 +117,69 @@ describe('unquoteGitPath', () => {
     expect(unquoteGitPath('"a\\"b"')).toBe('a"b');
     expect(unquoteGitPath('"tab\\there"')).toBe('tab\there');
     expect(unquoteGitPath('plain')).toBe('plain');
+  });
+});
+
+describe('reconstructOldContents', () => {
+  it('rebuilds the base contents from the work tree and hunks', () => {
+    const file = parsePatch(SIMPLE)[0]!;
+    const newContents = 'const a = 1;\nconst b = 3;\nconst c = 4;\nconst d = 5;\n';
+    expect(reconstructOldContents(file, newContents)).toBe(
+      'const a = 1;\nconst b = 2;\nconst c = 4;\nconst d = 5;\n',
+    );
+  });
+
+  it('copies unchanged regions outside hunks from the new contents', () => {
+    const patch = `diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -3,3 +3,4 @@
+ three
+-four
++FOUR
++FOUR.5
+ five
+@@ -9,2 +10,1 @@
+ nine
+-ten
+`;
+    const file = parsePatch(patch)[0]!;
+    const newContents = 'one\ntwo\nthree\nFOUR\nFOUR.5\nfive\nsix\nseven\neight\nnine\n';
+    expect(reconstructOldContents(file, newContents)).toBe(
+      'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n',
+    );
+  });
+
+  it('handles pure-insertion hunks with a zero-count base side', () => {
+    const patch = `diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -2,0 +3,2 @@
++inserted a
++inserted b
+`;
+    const file = parsePatch(patch)[0]!;
+    const newContents = 'one\ntwo\ninserted a\ninserted b\nthree\n';
+    expect(reconstructOldContents(file, newContents)).toBe('one\ntwo\nthree\n');
+  });
+
+  it('returns null when the work tree no longer matches the patch', () => {
+    const file = parsePatch(SIMPLE)[0]!;
+    const drifted = 'const a = 1;\nconst b = 999;\nconst c = 4;\nconst d = 5;\n';
+    expect(reconstructOldContents(file, drifted)).toBeNull();
+  });
+
+  it('preserves a missing trailing newline', () => {
+    const patch = `diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1,2 +1,2 @@
+ keep
+-old tail
++new tail
+`;
+    const file = parsePatch(patch)[0]!;
+    expect(reconstructOldContents(file, 'keep\nnew tail')).toBe('keep\nold tail');
   });
 });
 
