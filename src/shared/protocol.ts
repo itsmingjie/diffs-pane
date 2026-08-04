@@ -94,6 +94,8 @@ export interface FileContentsPayload {
   oldContents: string | null;
   /** Current work-tree contents; null for deleted files. */
   newContents: string | null;
+  /** sha256 of newContents, used as the save concurrency precondition. */
+  newContentsHash: string | null;
 }
 
 /** Body of `PUT api/file`: write edited contents back to the work tree. */
@@ -101,6 +103,14 @@ export interface SaveFileRequest {
   filter: DiffFilter;
   path: string;
   contents: string;
+  /** sha256 returned with the contents this edit session started from. */
+  expectedContentsHash: string;
+}
+
+export interface SaveFileResponse {
+  ok: true;
+  /** sha256 of the contents written, for another save in the same session. */
+  contentsHash: string;
 }
 
 /** SSE `patch` event payload (`comments` events carry `{ comments: ReviewComment[] }`). */

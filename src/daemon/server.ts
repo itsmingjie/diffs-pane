@@ -1,7 +1,16 @@
-import { createReadStream, existsSync, statSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { constants, createReadStream, existsSync, statSync } from 'node:fs';
+import { lstat, open, realpath, type FileHandle } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { extname, isAbsolute, join, normalize, resolve as resolvePath, sep } from 'node:path';
+import {
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  normalize,
+  resolve as resolvePath,
+  sep,
+} from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -25,6 +34,11 @@ const UI_DIR = fileURLToPath(new URL('../ui', import.meta.url));
 
 /** Body cap for `PUT api/file` saves; matches the daemon patch size limit. */
 const MAX_SAVE_BODY_BYTES = 24 * 1024 * 1024;
+/** Full-file hydration duplicates both sides in memory and JSON. Bound it
+ * independently from patch size so a one-line diff in a huge file stays safe. */
+const MAX_EDIT_FILE_BYTES = Number(
+  process.env['DIFFS_PANE_MAX_EDIT_FILE_BYTES'] ?? 10 * 1024 * 1024,
+);
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -214,9 +228,23 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
 
       let newContents: string;
       try {
-        newContents = await readFile(abs, 'utf8');
-      } catch {
-        return sendJson(res, 409, { error: 'file changed on disk; retry after refresh' });
+        const fileHandle = await openRegularWorkTreeFile(session.root, abs, constants.O_RDONLY);
+        try {
+          const fileStat = await fileHandle.stat();
+          if (fileStat.size > MAX_EDIT_FILE_BYTES) {
+            return sendJson(res, 413, {
+              error: `file exceeds the ${formatByteLimit(MAX_EDIT_FILE_BYTES)} edit limit`,
+            });
+          }
+          newContents = await fileHandle.readFile('utf8');
+        } finally {
+          await fileHandle.close();
+        }
+      } catch (error) {
+        return sendJson(res, fileAccessStatus(error), {
+          error:
+            error instanceof Error ? error.message : 'file changed on disk; retry after refresh',
+        });
       }
       let oldContents: string | null = null;
       if (file.kind !== 'added') {
@@ -233,19 +261,26 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         patchHash: patch.patchHash,
         oldContents,
         newContents,
+        newContentsHash: hashContents(newContents),
       };
       return sendJson(res, 200, payload);
     }
 
     // PUT: save edited contents back to the work tree.
     const body = await parseJsonBody<SaveFileRequest>(req, MAX_SAVE_BODY_BYTES);
-    if (!body || typeof body.path !== 'string' || typeof body.contents !== 'string') {
-      return sendJson(res, 400, { error: 'path and contents are required' });
+    if (
+      !body ||
+      typeof body.path !== 'string' ||
+      typeof body.contents !== 'string' ||
+      typeof body.expectedContentsHash !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(body.expectedContentsHash)
+    ) {
+      return sendJson(res, 400, {
+        error: 'path, contents, and expectedContentsHash are required',
+      });
     }
     if (!isDiffFilter(body.filter)) return sendJson(res, 400, { error: 'invalid filter' });
-    const summary = (await session.getPatch(body.filter)).files.find(
-      (f) => f.path === body.path,
-    );
+    const summary = (await session.getPatch(body.filter)).files.find((f) => f.path === body.path);
     if (!summary) {
       return sendJson(res, 422, { error: `file not in ${body.filter} diff: ${body.path}` });
     }
@@ -254,8 +289,25 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     }
     const abs = resolveWorkTreePath(session.root, body.path);
     if (!abs) return sendJson(res, 400, { error: `invalid path: ${body.path}` });
-    await writeFile(abs, body.contents, 'utf8');
-    return sendJson(res, 200, { ok: true });
+    try {
+      const fileHandle = await openRegularWorkTreeFile(session.root, abs, constants.O_RDWR);
+      try {
+        const currentContents = await fileHandle.readFile('utf8');
+        if (hashContents(currentContents) !== body.expectedContentsHash) {
+          return sendJson(res, 409, {
+            error: 'file changed on disk while you were editing; reload before saving',
+          });
+        }
+        await writeFileContents(fileHandle, body.contents);
+      } finally {
+        await fileHandle.close();
+      }
+    } catch (error) {
+      return sendJson(res, fileAccessStatus(error), {
+        error: error instanceof Error ? error.message : 'file changed on disk; retry after refresh',
+      });
+    }
+    return sendJson(res, 200, { ok: true, contentsHash: hashContents(body.contents) });
   }
 
   async function handleControl(
@@ -460,10 +512,78 @@ function resolveWorkTreePath(root: string, relPath: string): string | null {
   if (relPath === '' || relPath.includes('\0') || isAbsolute(relPath)) return null;
   const rootAbs = resolvePath(root);
   const abs = resolvePath(rootAbs, relPath);
-  if (abs === rootAbs || !abs.startsWith(rootAbs.endsWith(sep) ? rootAbs : rootAbs + sep)) {
-    return null;
-  }
+  if (abs === rootAbs || !isInside(rootAbs, abs)) return null;
   return abs;
+}
+
+/** Open one existing regular file without following its final path component.
+ * Resolve both the root and target first so intermediate symlinks cannot lead
+ * outside the worktree. */
+async function openRegularWorkTreeFile(
+  root: string,
+  path: string,
+  flags: number,
+): Promise<FileHandle> {
+  const [rootReal, parentReal, pathStat] = await Promise.all([
+    realpath(root),
+    realpath(dirname(path)),
+    lstat(path),
+  ]);
+  if ((parentReal !== rootReal && !isInside(rootReal, parentReal)) || !pathStat.isFile()) {
+    throw new FileAccessError('only regular files inside the worktree are editable', 422);
+  }
+  const targetReal = await realpath(path);
+  if (!isInside(rootReal, targetReal)) {
+    throw new FileAccessError('file resolves outside the worktree', 422);
+  }
+  const handle = await open(path, flags | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile()) {
+      throw new FileAccessError('only regular files are editable', 422);
+    }
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+function isInside(root: string, path: string): boolean {
+  return path !== root && path.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+
+class FileAccessError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+function fileAccessStatus(error: unknown): number {
+  if (error instanceof FileAccessError) return error.status;
+  if (error instanceof Error && 'code' in error && error.code === 'ELOOP') return 422;
+  return 409;
+}
+
+function hashContents(contents: string): string {
+  return createHash('sha256').update(contents).digest('hex');
+}
+
+async function writeFileContents(handle: FileHandle, contents: string): Promise<void> {
+  const bytes = Buffer.from(contents);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset);
+    offset += bytesWritten;
+  }
+  await handle.truncate(bytes.length);
+}
+
+function formatByteLimit(bytes: number): string {
+  return `${Math.round(bytes / 1024 / 1024)}MB`;
 }
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
