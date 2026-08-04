@@ -181,6 +181,36 @@ describe('reconstructOldContents', () => {
     const file = parsePatch(patch)[0]!;
     expect(reconstructOldContents(file, 'keep\nnew tail')).toBe('keep\nold tail');
   });
+
+  it('reconstructs the old side when a final newline was added', () => {
+    const patch = `diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1 +1 @@
+-old
+\\ No newline at end of file
++old
+`;
+    const file = parsePatch(patch)[0]!;
+    expect(file.oldNoNewlineAtEnd).toBe(true);
+    expect(file.newNoNewlineAtEnd).toBe(false);
+    expect(reconstructOldContents(file, 'old\n')).toBe('old');
+  });
+
+  it('reconstructs the old side when a final newline was removed', () => {
+    const patch = `diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1 +1 @@
+-old
++old
+\\ No newline at end of file
+`;
+    const file = parsePatch(patch)[0]!;
+    expect(file.oldNoNewlineAtEnd).toBe(false);
+    expect(file.newNoNewlineAtEnd).toBe(true);
+    expect(reconstructOldContents(file, 'old')).toBe('old\n');
+  });
 });
 
 describe('anchoring', () => {
