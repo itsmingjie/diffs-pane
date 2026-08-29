@@ -7,6 +7,7 @@ import { createRoot } from 'react-dom/client';
 
 import { App } from './App';
 import './styles.css';
+import { codeViewTheme, themeFromSearch } from './themes';
 
 const workerFactory = () => new DiffsHighlightWorker();
 
@@ -18,7 +19,7 @@ createRoot(root).render(
     <WorkerPoolContextProvider
       poolOptions={{ workerFactory }}
       highlighterOptions={{
-        theme: { dark: 'pierre-dark', light: 'pierre-light' },
+        theme: codeViewTheme(themeFromSearch(window.location.search)),
         langs: [
           'typescript',
           'javascript',

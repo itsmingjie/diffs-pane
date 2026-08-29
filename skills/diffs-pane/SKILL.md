@@ -32,6 +32,8 @@ dp watch branch                            # full branch diff (default)
 dp watch unstaged                          # worktree diff
 dp watch turn                              # changes since turn start
 dp watch --root /path/to/repo --base main
+dp watch --theme one-dark-pro              # choose a viewer theme
+dp watch --font-family "Dank Mono" --font-size 13 --line-height 20
 dp watch --owner <integration-name>         # hold an integration lease
 dp watch --no-watch                         # static viewer without live updates
 ```

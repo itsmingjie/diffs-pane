@@ -8,11 +8,26 @@ import {
 import { useEffect, useRef, useState } from 'react';
 
 import type { DiffFilter, SessionInfo } from '../../../src/shared/protocol';
+import { DIFF_THEMES, FONT_SIZES, LINE_HEIGHTS, type DiffTheme } from '../../../src/shared/themes';
 
 export interface ViewSettings {
   diffStyle: 'split' | 'unified';
   overflow: 'scroll' | 'wrap';
+  theme: DiffTheme;
+  fontFamily: string;
+  fontSize: number;
+  lineHeight: number;
 }
+
+const FONT_SUGGESTIONS = [
+  'Commit Mono',
+  'Berkeley Mono',
+  'Dank Mono',
+  'JetBrains Mono',
+  'Monaspace Neon',
+  'SF Mono',
+  'ui-monospace',
+];
 
 export interface ToolbarProps {
   session: SessionInfo;
@@ -150,6 +165,71 @@ function DisplayOptions({
               <RowsIcon aria-hidden="true" />
               Unified
             </button>
+          </div>
+          <label className="display-theme-row">
+            <span>Theme</span>
+            <span className="display-theme-select">
+              <select
+                value={view.theme}
+                onChange={(event) =>
+                  onViewChange({ ...view, theme: event.target.value as DiffTheme })
+                }
+              >
+                {DIFF_THEMES.map((theme) => (
+                  <option key={theme.value} value={theme.value}>
+                    {theme.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDownIcon aria-hidden="true" />
+            </span>
+          </label>
+          <div className="display-font-settings">
+            <label className="display-field display-font-family">
+              <span>Font family</span>
+              <input
+                type="text"
+                list="diff-font-suggestions"
+                value={view.fontFamily}
+                spellCheck={false}
+                onChange={(event) => onViewChange({ ...view, fontFamily: event.target.value })}
+              />
+              <datalist id="diff-font-suggestions">
+                {FONT_SUGGESTIONS.map((font) => (
+                  <option key={font} value={font} />
+                ))}
+              </datalist>
+            </label>
+            <label className="display-field">
+              <span>Font size</span>
+              <select
+                value={view.fontSize}
+                onChange={(event) =>
+                  onViewChange({ ...view, fontSize: Number(event.target.value) })
+                }
+              >
+                {FONT_SIZES.map((size) => (
+                  <option key={size} value={size}>
+                    {size}px
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="display-field">
+              <span>Line height</span>
+              <select
+                value={view.lineHeight}
+                onChange={(event) =>
+                  onViewChange({ ...view, lineHeight: Number(event.target.value) })
+                }
+              >
+                {LINE_HEIGHTS.map((height) => (
+                  <option key={height} value={height}>
+                    {height}px
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           <button
             type="button"
