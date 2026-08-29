@@ -8,18 +8,32 @@ import {
   type ReviewsExport,
   type StatusExport,
 } from '../shared/protocol.js';
+import { DIFF_THEMES, FONT_SIZES, isDiffTheme, LINE_HEIGHTS } from '../shared/themes.js';
 import { readReviews, ReviewStore } from '../store/reviews.js';
 import { detectBackend } from '../vcs/detect.js';
 import { parseArgs, stringFlag, type ParsedArgs } from './args.js';
 import { ensureDaemon, healthyDaemon } from './daemon.js';
 
-const VALUE_FLAGS = new Set(['filter', 'root', 'base', 'owner', 'session', 'turn', 'agent']);
+const VALUE_FLAGS = new Set([
+  'filter',
+  'root',
+  'base',
+  'owner',
+  'theme',
+  'font-family',
+  'font-size',
+  'line-height',
+  'session',
+  'turn',
+  'agent',
+]);
 
 const USAGE = `Usage:
   dp <command> [options]
 
 Commands:
   watch [branch|unstaged|turn]  Start or reuse a diff session (defaults to branch).
+  themes                        List available viewer themes.
   reviews [--json]              Export review comments for the working tree.
   resolve <id>... | --all       Delete addressed review comments.
   turn start|end                Start or finish an agent-turn diff baseline.
@@ -31,6 +45,10 @@ Watch options:
   --root <path>                 Use another working tree (defaults to cwd).
   --base <rev>                  Override the branch comparison base.
   --owner <name>                Hold a named session lease.
+  --theme <name>                Open with a viewer theme (run dp themes to list).
+  --font-family <name>          Open with a code font family.
+  --font-size <px>              Open with a code font size.
+  --line-height <px>            Open with a code line height.
 
 Bare dp is equivalent to dp watch branch. Run dp <command> --help for this help.
 `;
@@ -50,6 +68,8 @@ async function main(): Promise<void> {
       return reviews(args);
     case 'resolve':
       return resolveComments(args);
+    case 'themes':
+      return listThemes();
     case 'turn':
       return turn(args);
     case 'status':
@@ -77,6 +97,14 @@ async function watch(args: ParsedArgs): Promise<void> {
   if (!isDiffFilter(filter)) {
     throw new Error(`invalid --filter: ${filter} (expected turn|unstaged|branch)`);
   }
+  if (args.flags.get('theme') === true) throw new Error('--theme requires a value');
+  const theme = stringFlag(args, 'theme');
+  if (theme !== undefined && !isDiffTheme(theme)) {
+    throw new Error(`invalid --theme: ${theme} (run dp themes to list available themes)`);
+  }
+  const fontFamily = requiredStringFlag(args, 'font-family');
+  const fontSize = choiceFlag(args, 'font-size', FONT_SIZES);
+  const lineHeight = choiceFlag(args, 'line-height', LINE_HEIGHTS);
   const info = await ensureDaemon();
   const result = await controlRequest<{ url: string }>(info, 'POST', '/control/sessions/ensure', {
     root: rootArg(args),
@@ -86,7 +114,38 @@ async function watch(args: ParsedArgs): Promise<void> {
     watch: !args.flags.has('no-watch'),
   });
   // Contract: print only the live URL to stdout.
-  process.stdout.write(`${result.url}\n`);
+  const url = new URL(result.url);
+  if (theme !== undefined) url.searchParams.set('theme', theme);
+  if (fontFamily !== undefined) url.searchParams.set('font-family', fontFamily);
+  if (fontSize !== undefined) url.searchParams.set('font-size', String(fontSize));
+  if (lineHeight !== undefined) url.searchParams.set('line-height', String(lineHeight));
+  process.stdout.write(`${url.toString()}\n`);
+}
+
+function requiredStringFlag(args: ParsedArgs, name: string): string | undefined {
+  const raw = args.flags.get(name);
+  if (raw === true || raw === '') throw new Error(`--${name} requires a value`);
+  return raw;
+}
+
+function choiceFlag<const T extends readonly number[]>(
+  args: ParsedArgs,
+  name: string,
+  choices: T,
+): T[number] | undefined {
+  const raw = requiredStringFlag(args, name);
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!choices.includes(value as T[number])) {
+    throw new Error(`invalid --${name}: ${raw} (expected ${choices.join('|')})`);
+  }
+  return value as T[number];
+}
+
+function listThemes(): void {
+  for (const theme of DIFF_THEMES) {
+    process.stdout.write(`${theme.value}\t${theme.label}\n`);
+  }
 }
 
 async function reviews(args: ParsedArgs): Promise<void> {

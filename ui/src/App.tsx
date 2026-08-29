@@ -7,8 +7,13 @@ import {
   type FileDiffMetadata,
   type SelectedLineRange,
 } from '@pierre/diffs';
-import { CodeView, useStableCallback, type CodeViewHandle } from '@pierre/diffs/react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  CodeView,
+  useStableCallback,
+  useWorkerPool,
+  type CodeViewHandle,
+} from '@pierre/diffs/react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import type {
   DiffFilter,
@@ -28,6 +33,7 @@ import { CommentCard } from './components/CommentCard';
 import { Sidebar } from './components/Sidebar';
 import { Toolbar, type ViewSettings } from './components/Toolbar';
 import { parseLineHash, syncLineHash } from './lineHash';
+import { codeViewTheme, fontSettingsFromSearch, syncTheme, themeFromSearch } from './themes';
 
 type Connection = 'connected' | 'connecting' | 'reconnecting' | 'ended';
 
@@ -60,6 +66,7 @@ interface ParsedFile {
 }
 
 export function App() {
+  const workerPool = useWorkerPool();
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<DiffFilter | null>(null);
@@ -67,7 +74,12 @@ export function App() {
   const [comments, setComments] = useState<ReviewComment[]>([]);
   const [draft, setDraft] = useState<DraftComment | null>(null);
   const [connection, setConnection] = useState<Connection>('connecting');
-  const [view, setView] = useState<ViewSettings>({ diffStyle: 'split', overflow: 'scroll' });
+  const [view, setView] = useState<ViewSettings>(() => ({
+    diffStyle: 'split',
+    overflow: 'scroll',
+    theme: themeFromSearch(window.location.search),
+    ...fontSettingsFromSearch(window.location.search),
+  }));
   const [narrowView, setNarrowView] = useState(() => window.matchMedia(NARROW_VIEW_QUERY).matches);
   const [sidebarOpen, setSidebarOpen] = useState(
     () => !window.matchMedia(NARROW_VIEW_QUERY).matches,
@@ -82,6 +94,12 @@ export function App() {
   );
   const activeFilter = filter ?? session?.defaultFilter ?? 'branch';
   const effectiveDiffStyle = narrowView ? 'unified' : view.diffStyle;
+
+  useEffect(() => syncTheme(view.theme), [view.theme]);
+
+  useEffect(() => {
+    void workerPool?.setRenderOptions({ theme: codeViewTheme(view.theme) });
+  }, [view.theme, workerPool]);
 
   useEffect(() => {
     const query = window.matchMedia(NARROW_VIEW_QUERY);
@@ -347,7 +365,7 @@ export function App() {
   // ── CodeView options (memoized: CodeView diffs options by identity) ──
   const options = useMemo<CodeViewOptions<AnnotationMeta>>(
     () => ({
-      theme: { dark: 'pierre-dark', light: 'pierre-light' },
+      theme: codeViewTheme(view.theme),
       diffStyle: effectiveDiffStyle,
       overflow: view.overflow,
       stickyHeaders: true,
@@ -355,13 +373,14 @@ export function App() {
       enableGutterUtility: true,
       lineHoverHighlight: 'number',
       hunkSeparators: 'line-info-basic',
+      itemMetrics: { lineHeight: view.lineHeight },
       layout: CODE_VIEW_LAYOUT,
       unsafeCSS: CODE_VIEW_UNSAFE_CSS,
       onGutterUtilityClick(range, context) {
         if (context.item.type === 'diff') handleGutterClick(range, context.item.id);
       },
     }),
-    [effectiveDiffStyle, view.overflow, handleGutterClick],
+    [effectiveDiffStyle, view.overflow, view.theme, view.lineHeight, handleGutterClick],
   );
 
   const renderCustomHeader = useStableCallback((item: CodeViewItem<AnnotationMeta>) => (
@@ -427,7 +446,16 @@ export function App() {
             onOpenComment={openComment}
           />
         )}
-        <main className="diff-pane">
+        <main
+          className="diff-pane"
+          style={
+            {
+              '--viewer-font-family': view.fontFamily,
+              '--viewer-font-size': `${view.fontSize}px`,
+              '--viewer-line-height': `${view.lineHeight}px`,
+            } as CSSProperties
+          }
+        >
           {patch.error ? (
             <div className="banner error">{patch.error}</div>
           ) : items.length === 0 ? (

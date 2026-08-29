@@ -53,6 +53,13 @@ dp watch unstaged
 dp watch turn
 ```
 
+Choose the initial viewer theme from the command line:
+
+```sh
+dp themes
+dp watch --theme one-dark-pro --font-family "Dank Mono" --font-size 13 --line-height 20
+```
+
 ## Human-agent review loop
 
 1. The agent runs `dp watch` and shares the URL.
@@ -80,6 +87,7 @@ saved text has one unambiguous match; otherwise they remain available as
 | Command | Purpose |
 | --- | --- |
 | `dp watch [branch\|unstaged\|turn]` | Start or reuse a session and print its URL |
+| `dp themes` | List themes accepted by `dp watch --theme` |
 | `dp reviews [--json]` | Export review comments for the current working tree |
 | `dp resolve <id>...` | Delete addressed review comments |
 | `dp resolve --all` | Delete every review comment for the working tree |
@@ -95,14 +103,20 @@ dp watch [branch|unstaged|turn] \
   [--no-watch] \
   [--root <path>] \
   [--base <revision>] \
+  [--theme <name>] \
+  [--font-family <name>] \
+  [--font-size <px>] \
+  [--line-height <px>] \
   [--owner <integration-name>]
 ```
 
 The filter defaults to `branch`; bare `dp` is equivalent to `dp watch branch`.
 `--no-watch` opens a static session without filesystem updates. `--root`
-defaults to the current directory. `--base` overrides the branch base. `--owner`
-creates an opaque integration lease; a session remains alive until its final
-owner releases it.
+defaults to the current directory. `--base` overrides the branch base. `--theme`
+selects the initial viewer theme; run `dp themes` to list valid names.
+`--font-family`, `--font-size`, and `--line-height` set initial code typography.
+`--owner` creates an opaque integration lease; a session remains alive until
+its final owner releases it.
 
 ### Turn tracking
 
@@ -132,6 +146,7 @@ The daemon exits after its final session stops.
 - Live patch refresh over SSE
 - Split and unified layouts, line wrapping, syntax highlighting, and sticky
   per-file headers
+- Selectable syntax themes plus font family, size, and line height controls
 - Dense, searchable file tree with status and line statistics
 - Expandable Diff Stats panel with file, addition, deletion, and line totals
 - Collapsible desktop sidebar and an overlay sidebar for narrow coding panes
