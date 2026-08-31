@@ -93,13 +93,11 @@ export function useEdits({
   const [error, setError] = useState<string | null>(null);
   const [loadingCount, setLoadingCount] = useState(0);
   const [editorReady, setEditorReady] = useState(editModule !== undefined);
-  const [suspended, setSuspended] = useState(false);
 
   const editsRef = useRef(new Map<string, LocalEdit>());
   const actionPendingRef = useRef(false);
   const requestsRef = useRef(new WeakMap<FileDiffMetadata, Promise<FileContentsPayload>>());
   const payloadsRef = useRef(new WeakMap<FileDiffMetadata, FileContentsPayload>());
-  const pendingChangesRef = useRef(new Map<string, PendingChange>());
 
   const summariesByPath = useMemo(
     () => new Map((patch?.files ?? []).map((summary) => [summary.path, summary])),
@@ -128,12 +126,10 @@ export function useEdits({
 
   const reset = useStableCallback(() => {
     editsRef.current.clear();
-    pendingChangesRef.current.clear();
     requestsRef.current = new WeakMap();
     payloadsRef.current = new WeakMap();
     setEdits(new Map());
     setError(null);
-    setSuspended(false);
   });
 
   useEffect(() => reset(), [activeFilter, reset]);
@@ -190,71 +186,58 @@ export function useEdits({
 
   const updateEdit = useStableCallback((path: string, change: PendingChange) => {
     if (change.item.type !== 'diff' || actionPendingRef.current) return;
-    const fileDiff = change.item.fileDiff;
+    const { fileDiff } = change.item;
+    const previous = editsRef.current.get(path);
+    const parsed = parsedByPath.get(path);
+    const summary = previous?.summary ?? summariesByPath.get(path);
+    if (!summary || (!previous && !parsed)) return;
     const original = payloadsRef.current.get(fileDiff);
-    if (!original) {
-      const previous = editsRef.current.get(path);
-      const parsed = parsedByPath.get(path);
-      const summary = previous?.summary ?? summariesByPath.get(path);
-      if (!summary || (!previous && !parsed)) return;
-      const next = new Map(editsRef.current);
-      next.set(path, {
-        status: 'loading',
+
+    const next = new Map(editsRef.current);
+    if (original && change.file.contents === original.newContents) {
+      next.delete(path);
+    } else {
+      const base = {
         path,
         fileDiff: previous?.fileDiff ?? fileDiff,
         sectionHash: previous?.sectionHash ?? parsed!.sectionHash,
         summary,
         file: { ...change.file },
-        liveDiff: previous?.liveDiff ?? fileDiff,
         annotations: annotationsForEdit(change, previous, annotationsByPath.get(path)),
-      });
-      editsRef.current = next;
-      setEdits(next);
-      if (!previous) onEditStart(path);
-
-      pendingChangesRef.current.set(path, change);
-      void fetchContents(fileDiff, path)
-        .then(() => {
-          const pending = pendingChangesRef.current.get(path);
-          if (pending) {
-            pendingChangesRef.current.delete(path);
-            updateEdit(path, pending);
-          }
-        })
-        .catch((loadError: unknown) => {
-          setError(
-            `Failed to prepare ${path} for saving: ${loadError instanceof Error ? loadError.message : String(loadError)}`,
-          );
-        });
-      return;
-    }
-
-    const next = new Map(editsRef.current);
-    if (change.file.contents === original.newContents) {
-      next.delete(path);
-    } else {
-      const previous = next.get(path);
-      const parsed = parsedByPath.get(path);
-      const summary = summariesByPath.get(path);
-      if (!previous && (!parsed || !summary)) return;
-      const editSummary = previous?.summary ?? summary!;
-      next.set(path, {
-        status: 'ready',
+      };
+      next.set(
         path,
-        fileDiff: previous?.fileDiff ?? fileDiff,
-        sectionHash: previous?.sectionHash ?? parsed!.sectionHash,
-        summary: editSummary,
-        original,
-        file: { ...change.file },
-        liveDiff: parseDiffFromFile(
-          original.oldContents === null
-            ? null
-            : { name: editSummary.prevPath ?? path, contents: original.oldContents },
-          change.file,
-        ),
-        annotations: annotationsForEdit(change, previous, annotationsByPath.get(path)),
-      });
+        original
+          ? {
+              ...base,
+              status: 'ready',
+              original,
+              liveDiff: parseDiffFromFile(
+                original.oldContents === null
+                  ? null
+                  : { name: summary.prevPath ?? path, contents: original.oldContents },
+                change.file,
+              ),
+            }
+          : { ...base, status: 'loading', liveDiff: previous?.liveDiff ?? fileDiff },
+      );
       if (!previous) onEditStart(path);
+      if (!original) {
+        // Hydrate the baseline in the background; the stored edit already
+        // carries the latest contents, so replay from it once loaded.
+        void fetchContents(fileDiff, path)
+          .then(() => {
+            const current = editsRef.current.get(path);
+            if (current?.status === 'loading') {
+              updateEdit(path, { item: change.item, file: current.file });
+            }
+          })
+          .catch((loadError: unknown) => {
+            setError(
+              `Failed to prepare ${path} for saving: ${loadError instanceof Error ? loadError.message : String(loadError)}`,
+            );
+          });
+      }
     }
     editsRef.current = next;
     setEdits(next);
@@ -305,7 +288,6 @@ export function useEdits({
         return;
       }
       const result = await api.applyEdits(action, { filter: activeFilter, files });
-      setSuspended(true);
       prepareForRefresh();
       editsRef.current.clear();
       setEdits(new Map());
@@ -318,7 +300,6 @@ export function useEdits({
         `Failed to ${action}: ${applyError instanceof Error ? applyError.message : String(applyError)}`,
       );
     } finally {
-      setSuspended(false);
       actionPendingRef.current = false;
       setPendingAction(null);
     }
@@ -341,7 +322,7 @@ export function useEdits({
     pendingAction,
     error,
     loading: loadingCount > 0,
-    editorEnabled: editorReady && !suspended,
+    editorReady,
     loadDiffFiles,
     onItemEditChange,
     applyLocalEdits,

@@ -277,8 +277,11 @@ export function App() {
         const annotations = edit?.annotations ?? annotationsByPath.get(path) ?? [];
         const collapsed = collapsedPaths.has(path);
         const summary = filesByPath.get(path);
-        const editable = summary !== undefined && !summary.binary && summary.kind !== 'deleted';
-        const key = `${sectionHash}|${collapsed ? 1 : 0}|${annotationsKey(annotations)}`;
+        const editable =
+          edits.editorReady && summary !== undefined && !summary.binary && summary.kind !== 'deleted';
+        // The version must change whenever any rendered input (including the
+        // edit flag) changes, so CodeView re-reads the item.
+        const key = `${sectionHash}|${collapsed ? 1 : 0}|${editable ? 1 : 0}|${annotationsKey(annotations)}`;
         const previous = versionsRef.current.get(path);
         const version = previous?.key === key ? previous.version : (previous?.version ?? 0) + 1;
         versionsRef.current.set(path, { version, key });
@@ -289,13 +292,13 @@ export function App() {
           annotations,
           collapsed,
           version,
-          edit: edits.editorEnabled && editable,
+          edit: editable,
         };
       }),
     [
       displayedParsedFiles,
       edits.edits,
-      edits.editorEnabled,
+      edits.editorReady,
       annotationsByPath,
       collapsedPaths,
       filesByPath,
@@ -364,13 +367,13 @@ export function App() {
 
   useEffect(() => {
     const handleSave = (event: KeyboardEvent) => {
-      const target = event.target;
       if (
         !(event.metaKey || event.ctrlKey) ||
         event.altKey ||
         event.shiftKey ||
         event.key.toLowerCase() !== 's' ||
-        (target instanceof Element && target.closest('.comment-card'))
+        // Comment forms are the only textareas; the diff editor is contenteditable.
+        event.target instanceof HTMLTextAreaElement
       ) {
         return;
       }

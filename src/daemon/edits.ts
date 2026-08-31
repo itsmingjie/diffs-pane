@@ -79,9 +79,15 @@ export async function readEditableFile(
     await handle.close();
   }
 
-  const oldContents = file.kind === 'added' ? null : reconstructOldContents(file, newContents);
-  if (file.kind !== 'added' && oldContents === null) {
-    throw new EditError('work tree changed since the diff was computed; retry after refresh', 409);
+  let oldContents: string | null = null;
+  if (file.kind !== 'added') {
+    oldContents = reconstructOldContents(file, newContents);
+    if (oldContents === null) {
+      throw new EditError(
+        'work tree changed since the diff was computed; retry after refresh',
+        409,
+      );
+    }
   }
 
   return {
