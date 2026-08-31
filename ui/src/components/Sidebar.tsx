@@ -261,10 +261,13 @@ function CommentsList({
               onClick={() => onOpenComment(comment)}
               title={comment.outdated ? 'Outdated: the commented lines changed' : undefined}
             >
-              <span className={`comment-line ${comment.outdated ? '' : comment.side}`}>
-                {commentLineLabel(comment)}
+              <span className="comment-header">
+                Commented on{' '}
+                <span className={`comment-line ${comment.outdated ? '' : comment.side}`}>
+                  {commentLineLabel(comment)}
+                </span>
+                {comment.outdated && <span className="badge">outdated</span>}
               </span>
-              {comment.outdated && <span className="badge">outdated</span>}
               <span className="comment-preview">{comment.body}</span>
             </button>
           ))}
