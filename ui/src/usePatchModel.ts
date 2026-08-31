@@ -14,6 +14,8 @@ export function usePatchModel(patch: PatchPayload | null) {
   const cacheRef = useRef(new Map<string, FileDiffMetadata>());
   const clearCache = useCallback(() => cacheRef.current.clear(), []);
 
+  // Reuse parsed metadata for unchanged sections across patch refreshes.
+  /* oxlint-disable react/refs */
   const files = useMemo<ParsedFile[]>(() => {
     if (!patch || patch.patch === '') return [];
 
@@ -39,6 +41,7 @@ export function usePatchModel(patch: PatchPayload | null) {
     cacheRef.current = next;
     return parsed;
   }, [patch]);
+  /* oxlint-enable react/refs */
 
   return { files, clearCache };
 }

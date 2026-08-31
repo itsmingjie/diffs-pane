@@ -143,6 +143,8 @@ export function App() {
   useEffect(() => {
     if (!sessionReady || filter === null) return;
     let opened = false;
+    // This effect owns the SSE subscription and its status.
+    // oxlint-disable-next-line react/set-state-in-effect
     setConnection('connecting');
     patchHashRef.current = null;
     void loadPatch(filter);
@@ -164,11 +166,6 @@ export function App() {
       },
     });
   }, [sessionReady, filter, loadPatch]);
-
-  useEffect(() => {
-    setDraft(null);
-    setSelectedLines(null);
-  }, [activeFilter]);
 
   const { files: parsedFiles, clearCache: clearParsedFileCache } = usePatchModel(patch);
   const filterComments = useMemo(
@@ -263,6 +260,8 @@ export function App() {
   );
 
   const versionsRef = useRef(new Map<string, { version: number; key: string }>());
+  // CodeView re-reads an item only when its version changes.
+  /* oxlint-disable react/refs, react/memo-dependencies */
   const items = useMemo<CodeViewItem<AnnotationMeta>[]>(
     () =>
       displayedParsedFiles.map(({ path, fileDiff, sectionHash }) => {
@@ -300,12 +299,15 @@ export function App() {
       filesByPath,
     ],
   );
+  /* oxlint-enable react/refs, react/memo-dependencies */
 
   const captureScrollAnchor = useScrollAnchor(viewerRef, items, patch?.patchHash ?? '');
-  prepareForRefreshRef.current = () => {
-    captureScrollAnchor(true);
-    clearParsedFileCache();
-  };
+  useEffect(() => {
+    prepareForRefreshRef.current = () => {
+      captureScrollAnchor(true);
+      clearParsedFileCache();
+    };
+  });
 
   useEffect(() => {
     const target = pendingHashTargetRef.current;
@@ -352,12 +354,16 @@ export function App() {
 
   const changeFilter = useStableCallback((next: DiffFilter) => {
     if (edits.pendingAction) return;
-    if (
-      next !== activeFilter &&
-      edits.dirtyPaths.size > 0 &&
-      !window.confirm('Discard unsaved file changes and switch diff source?')
-    ) {
-      return;
+    if (next !== activeFilter) {
+      if (
+        edits.dirtyPaths.size > 0 &&
+        !window.confirm('Discard unsaved file changes and switch diff source?')
+      ) {
+        return;
+      }
+      setDraft(null);
+      setSelectedLines(null);
+      edits.reset();
     }
     setFilter(next);
   });

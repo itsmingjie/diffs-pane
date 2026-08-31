@@ -147,13 +147,15 @@ function FilesTree({
   const stablePaths = useStablePaths(sortedPaths);
   const preparedInput = useMemo(() => preparePresortedFileTreeInput(stablePaths), [stablePaths]);
 
-  // Latest data for callbacks captured once at model creation.
+  // useFileTree captures these callbacks once, so they read current data from refs.
+  /* oxlint-disable react/refs */
   const filePathsRef = useRef(new Set<string>());
   const commentCountsRef = useRef(new Map<string, number>());
   const dirtyPathsRef = useRef(dirtyPaths);
   dirtyPathsRef.current = dirtyPaths;
   filePathsRef.current = new Set(files.map((f) => f.path));
   commentCountsRef.current = countByPath(comments);
+  /* oxlint-enable react/refs */
 
   const handleSelectionChange = useStableCallback((selected: readonly string[]) => {
     const path = selected[0];
@@ -209,6 +211,8 @@ function FilesTree({
   useEffect(() => {
     // Re-render decorations with the latest value from commentCountsRef.
     model.setComposition();
+    // Both values trigger updates to the ref-backed decorations.
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [model, comments, dirtyPaths]);
 
   if (files.length === 0) {
@@ -368,6 +372,8 @@ function groupByFile(comments: ReviewComment[], files: PatchFileSummary[]): Comm
   return ordered;
 }
 
+// Keep the array identity when its contents have not changed.
+/* oxlint-disable react/refs */
 function useStablePaths(paths: readonly string[]): readonly string[] {
   const stable = useRef(paths);
   if (
@@ -378,6 +384,7 @@ function useStablePaths(paths: readonly string[]): readonly string[] {
   }
   return stable.current;
 }
+/* oxlint-enable react/refs */
 
 function countByPath(comments: ReviewComment[]): Map<string, number> {
   const counts = new Map<string, number>();

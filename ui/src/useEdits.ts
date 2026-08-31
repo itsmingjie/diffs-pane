@@ -113,6 +113,8 @@ export function useEdits({
 
   useEffect(() => {
     if (!hasEditableFiles || editorReady) return;
+    // The effect owns the loading state for this import.
+    // oxlint-disable-next-line react/set-state-in-effect
     setLoadingCount((count) => count + 1);
     void loadEditModule()
       .then(() => setEditorReady(true))
@@ -131,8 +133,6 @@ export function useEdits({
     setEdits(new Map());
     setError(null);
   });
-
-  useEffect(() => reset(), [activeFilter, reset]);
 
   const fetchContents = useStableCallback(
     (fileDiff: FileDiffMetadata, path: string): Promise<FileContentsPayload> => {
@@ -184,7 +184,7 @@ export function useEdits({
     }
   });
 
-  const updateEdit = useStableCallback((path: string, change: PendingChange) => {
+  const updateEdit = useStableCallback(function updateEdit(path: string, change: PendingChange) {
     if (change.item.type !== 'diff' || actionPendingRef.current) return;
     const { fileDiff } = change.item;
     const previous = editsRef.current.get(path);
@@ -319,6 +319,7 @@ export function useEdits({
   return {
     edits,
     dirtyPaths,
+    reset,
     pendingAction,
     error,
     loading: loadingCount > 0,
