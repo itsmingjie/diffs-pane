@@ -73,6 +73,9 @@ export function useScrollAnchor<T>(
       if (!anchor.waitForPatch || patchArrived) anchorRef.current = null;
     });
     return () => cancelAnimationFrame(frame);
+    // `items` deliberately re-triggers restore after the list re-renders, and
+    // `restore` is stable but required by react-hooks/exhaustive-deps.
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [items, patchHash, restore]);
 
   useEffect(() => {

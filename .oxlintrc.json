@@ -12,14 +12,6 @@
     // Sequential awaits are intentional: VCS commands, shutdown, and polling
     // must run in order, not in parallel.
     "no-await-in-loop": "off",
-    // These React compiler rules became part of the correctness preset in
-    // oxlint 1.80. Keep the existing lint baseline until they can be adopted
-    // in a dedicated React refactor.
-    "react/exhaustive-effect-dependencies": "off",
-    "react/immutability": "off",
-    "react/memo-dependencies": "off",
-    "react/refs": "off",
-    "react/set-state-in-effect": "off",
     // The automatic JSX runtime does not need React in scope.
     "react/react-in-jsx-scope": "off",
     // Vite-specific import specifiers (e.g. `?worker`) and side-effect CSS
