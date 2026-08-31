@@ -42,15 +42,7 @@ const NARROW_VIEW_QUERY = '(max-width: 767px)';
 const CODE_VIEW_LAYOUT = { paddingTop: 0, gap: 1, paddingBottom: 16 };
 const CODE_VIEW_UNSAFE_CSS = `
   [data-diffs-header][data-sticky] {
-    top: 4px;
-  }
-
-  [data-diffs-header][data-sticky]::before {
-    content: '';
-    position: absolute;
-    inset: -4px 0 100%;
-    background: var(--diffs-bg);
-    pointer-events: none;
+    top: 0;
   }
 `;
 
