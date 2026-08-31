@@ -13,7 +13,11 @@
   --text: #a3a3a3;
   --text-dim: #878787;
   --surface: color-mix(in srgb, var(--text) 7%, var(--bg-raised));
-  --border: color-mix(in srgb, var(--text) 22%, var(--bg-raised));
+  --border: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--text) 22%, var(--bg-raised)) 50%,
+    transparent
+  );
   --accent: #009fff;
   --danger: #ff2e3f;
   --warning: #ffca00;
@@ -40,7 +44,11 @@
   --text: #525252;
   --text-dim: #626262;
   --surface: color-mix(in srgb, var(--text) 7%, var(--bg-raised));
-  --border: color-mix(in srgb, var(--text) 22%, var(--bg-raised));
+  --border: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--text) 22%, var(--bg-raised)) 50%,
+    transparent
+  );
   --accent: #009fff;
   --danger: #d52c36;
   --warning: #d5a910;
@@ -64,7 +72,11 @@
     --text: #525252;
     --text-dim: #626262;
     --surface: color-mix(in srgb, var(--text) 7%, var(--bg-raised));
-    --border: color-mix(in srgb, var(--text) 22%, var(--bg-raised));
+    --border: color-mix(
+      in srgb,
+      color-mix(in srgb, var(--text) 22%, var(--bg-raised)) 50%,
+      transparent
+    );
     --accent: #009fff;
     --danger: #d52c36;
     --warning: #d5a910;
@@ -80,6 +92,11 @@
 
 * {
   box-sizing: border-box;
+}
+
+:focus,
+:focus-visible {
+  outline: none;
 }
 
 .sr-only {
@@ -135,14 +152,6 @@ body,
   white-space: nowrap;
 }
 
-.vcs-badge {
-  font-size: 11px;
-  padding: 1px 6px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text-dim);
-}
-
 .source-select {
   position: relative;
   display: inline-flex;
@@ -171,11 +180,6 @@ body,
   height: 15px;
   color: var(--text-dim);
   pointer-events: none;
-}
-
-.source-select select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
 }
 
 .tab {
@@ -329,11 +333,6 @@ body,
   pointer-events: none;
 }
 
-.display-theme-select select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .display-font-settings {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -369,12 +368,6 @@ body,
   padding: 4px 8px;
 }
 
-.display-field input:focus-visible,
-.display-field select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .switch {
   position: relative;
   width: 32px;
@@ -401,12 +394,6 @@ body,
 
 .display-option-row[aria-checked='true'] .switch > span {
   transform: translateX(14px);
-}
-
-.display-layout button:focus-visible,
-.display-option-row:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .connection {
@@ -450,7 +437,9 @@ body,
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
+  height: 40px;
+  flex: none;
+  padding: 0 8px;
 }
 
 .sidebar-tabs .tab {
@@ -525,13 +514,6 @@ body,
   background: var(--surface);
 }
 
-.icon-button:focus-visible,
-.collapse-button:focus-visible,
-.comment-action-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .tree-host {
   flex: 1;
   min-height: 120px;
@@ -597,39 +579,59 @@ body,
 .comments-list {
   flex: 1;
   overflow: auto;
-  padding: 2px 8px 8px;
+  padding: 4px 10px 12px;
 }
 
 .comments-section-path {
-  margin: 8px 0 2px;
-  font-size: 11px;
-  font-weight: 600;
+  margin: 14px 12px 6px;
+  font-size: 12px;
+  font-weight: 500;
   font-family: var(--font-interface);
-  color: var(--text-dim);
+  color: var(--text);
   word-break: break-all;
+}
+
+.comments-list section:first-child .comments-section-path {
+  margin-top: 6px;
+}
+
+.comment-group {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
 }
 
 .comment-link {
   display: block;
   width: 100%;
   text-align: left;
-  background: none;
+  background: transparent;
   border: none;
-  padding: 4px 0;
+  padding: 10px 12px;
   cursor: pointer;
   color: var(--text);
+  font: inherit;
+}
+
+.comment-link + .comment-link {
+  border-top: 1px solid var(--border);
 }
 
 .comment-link:hover {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: var(--hover);
+}
+
+.comment-header {
+  display: block;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--text-dim) 65%, transparent);
+  margin-bottom: 2px;
 }
 
 .comment-line {
-  display: inline-block;
-  font-family: var(--font-code);
-  font-size: 11px;
-  color: var(--text-dim);
-  margin-right: 6px;
+  font-weight: 500;
+  color: var(--text);
 }
 
 .comment-line.additions {
@@ -647,16 +649,15 @@ body,
   border: 1px solid var(--warning);
   border-radius: 8px;
   padding: 0 5px;
-  margin-right: 6px;
+  margin-left: 6px;
 }
 
 .comment-link .comment-preview {
   display: block;
   font-size: 12px;
+  line-height: 1.5;
   color: var(--text-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .diff-stats {
@@ -736,15 +737,16 @@ body,
   --diffs-line-height: var(--viewer-line-height, 20px);
   flex: 1;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 0 8px;
   font-weight: 400;
 }
 
 /* CodeView represents layout.paddingTop as an inline margin on its direct
-   child. Keep it equal to the sidebar's 4px top gutter, even if a reused or
-   resized virtualizer leaves behind a stale inline value. */
+   child. Keep it flush with the top, even if a reused or resized virtualizer
+   leaves behind a stale inline value. */
 .code-view > div {
-  margin-top: 4px !important;
+  margin-top: 0 !important;
 }
 
 .banner {
@@ -1074,10 +1076,6 @@ body,
 
   .toolbar-title {
     max-width: 34vw;
-  }
-
-  .toolbar-title .vcs-badge {
-    display: none;
   }
 
   .source-select {

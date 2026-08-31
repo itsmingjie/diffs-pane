@@ -253,21 +253,26 @@ function CommentsList({
       {sections.map((section) => (
         <section key={section.path}>
           <h3 className="comments-section-path">{section.path}</h3>
-          {section.comments.map((comment) => (
-            <button
-              key={comment.id}
-              type="button"
-              className="comment-link"
-              onClick={() => onOpenComment(comment)}
-              title={comment.outdated ? 'Outdated: the commented lines changed' : undefined}
-            >
-              <span className={`comment-line ${comment.outdated ? '' : comment.side}`}>
-                {commentLineLabel(comment)}
-              </span>
-              {comment.outdated && <span className="badge">outdated</span>}
-              <span className="comment-preview">{comment.body}</span>
-            </button>
-          ))}
+          <div className="comment-group">
+            {section.comments.map((comment) => (
+              <button
+                key={comment.id}
+                type="button"
+                className="comment-link"
+                onClick={() => onOpenComment(comment)}
+                title={comment.outdated ? 'Outdated: the commented lines changed' : undefined}
+              >
+                <span className="comment-header">
+                  Commented on{' '}
+                  <span className={`comment-line ${comment.outdated ? '' : comment.side}`}>
+                    {commentLineLabel(comment)}
+                  </span>
+                  {comment.outdated && <span className="badge">outdated</span>}
+                </span>
+                <span className="comment-preview">{comment.body}</span>
+              </button>
+            ))}
+          </div>
         </section>
       ))}
     </div>
@@ -285,7 +290,7 @@ function DiffStats({
   totalLines: number;
   unsavedFiles: number;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   let additions = 0;
   let deletions = 0;
   for (const file of files) {
@@ -306,7 +311,7 @@ function DiffStats({
       {expanded && (
         <div className="diff-stats-details">
           <StatRow label="Files" value={files.length} />
-          <StatRow label="Unsaved files" value={unsavedFiles} />
+          {unsavedFiles > 0 && <StatRow label="Unsaved files" value={unsavedFiles} />}
           <StatRow label="Additions" value={additions} tone="additions" />
           <StatRow label="Deletions" value={deletions} tone="deletions" />
           <StatRow label="Lines of code" value={totalLines} />
