@@ -143,7 +143,7 @@ export function App() {
   useEffect(() => {
     if (!sessionReady || filter === null) return;
     let opened = false;
-    // Resets status while (re)subscribing to the SSE stream below.
+    // This effect owns the SSE subscription and its status.
     // oxlint-disable-next-line react/set-state-in-effect
     setConnection('connecting');
     patchHashRef.current = null;
@@ -260,9 +260,7 @@ export function App() {
   );
 
   const versionsRef = useRef(new Map<string, { version: number; key: string }>());
-  // Render-time version cache: the version must bump exactly when a rendered
-  // input changes so CodeView re-reads the item; the ref carries the previous
-  // keys across renders, which the compiler-based react rules cannot model.
+  // CodeView re-reads an item only when its version changes.
   /* oxlint-disable react/refs, react/memo-dependencies */
   const items = useMemo<CodeViewItem<AnnotationMeta>[]>(
     () =>

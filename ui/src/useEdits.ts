@@ -113,7 +113,7 @@ export function useEdits({
 
   useEffect(() => {
     if (!hasEditableFiles || editorReady) return;
-    // Tracks the dynamic editor import in the shared loading counter.
+    // The effect owns the loading state for this import.
     // oxlint-disable-next-line react/set-state-in-effect
     setLoadingCount((count) => count + 1);
     void loadEditModule()
@@ -184,8 +184,6 @@ export function useEdits({
     }
   });
 
-  // The named function expression lets the background hydration replay call
-  // itself without reading the binding while it is still being initialized.
   const updateEdit = useStableCallback(function updateEdit(path: string, change: PendingChange) {
     if (change.item.type !== 'diff' || actionPendingRef.current) return;
     const { fileDiff } = change.item;

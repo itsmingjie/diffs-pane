@@ -14,9 +14,7 @@ export function usePatchModel(patch: PatchPayload | null) {
   const cacheRef = useRef(new Map<string, FileDiffMetadata>());
   const clearCache = useCallback(() => cacheRef.current.clear(), []);
 
-  // Render-time parse cache: reuses FileDiffMetadata for unchanged sections
-  // across patch refreshes. Reads and writes are keyed by content hash, so
-  // they are idempotent within a render.
+  // Reuse parsed metadata for unchanged sections across patch refreshes.
   /* oxlint-disable react/refs */
   const files = useMemo<ParsedFile[]>(() => {
     if (!patch || patch.patch === '') return [];

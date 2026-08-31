@@ -147,8 +147,7 @@ function FilesTree({
   const stablePaths = useStablePaths(sortedPaths);
   const preparedInput = useMemo(() => preparePresortedFileTreeInput(stablePaths), [stablePaths]);
 
-  // Latest data for callbacks captured once at model creation: the tree model
-  // reads these refs from renderRowDecoration, so render keeps them in sync.
+  // useFileTree captures these callbacks once, so they read current data from refs.
   /* oxlint-disable react/refs */
   const filePathsRef = useRef(new Set<string>());
   const commentCountsRef = useRef(new Map<string, number>());
@@ -212,7 +211,7 @@ function FilesTree({
   useEffect(() => {
     // Re-render decorations with the latest value from commentCountsRef.
     model.setComposition();
-    // comments and dirtyPaths deliberately re-trigger the decoration pass.
+    // Both values trigger updates to the ref-backed decorations.
     // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [model, comments, dirtyPaths]);
 
@@ -373,8 +372,7 @@ function groupByFile(comments: ReviewComment[], files: PatchFileSummary[]): Comm
   return ordered;
 }
 
-// Stable-identity memo: reuses the previous array when contents are equal so
-// downstream memos and the tree model do not churn.
+// Keep the array identity when its contents have not changed.
 /* oxlint-disable react/refs */
 function useStablePaths(paths: readonly string[]): readonly string[] {
   const stable = useRef(paths);
