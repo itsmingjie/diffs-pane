@@ -27,7 +27,6 @@ const TREE_UNSAFE_CSS = `
   [data-item-contains-git-change='true'] > [data-item-section='git'] {
     display: none;
   }
-  [title='Unsaved changes'] { color: #e9b949; }
   [data-item-type='folder'] {
     color: color-mix(in lab, light-dark(#000, #fff) 25%, var(--trees-fg));
     font-weight: 500;
@@ -168,7 +167,13 @@ function FilesTree({
     onSelectionChange: handleSelectionChange,
     renderRowDecoration: ({ item }) => {
       if (!filePathsRef.current.has(item.path)) return null;
-      if (dirtyPathsRef.current.has(item.path)) return { text: '●', title: 'Unsaved changes' };
+      if (dirtyPathsRef.current.has(item.path)) {
+        return {
+          text: '●',
+          title: 'Unsaved changes',
+          parts: [{ text: '●', color: 'var(--warning)' }],
+        };
+      }
       const count = commentCountsRef.current.get(item.path) ?? 0;
       if (count === 0) return null;
       return {
@@ -280,7 +285,7 @@ function DiffStats({
   totalLines: number;
   unsavedFiles: number;
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   let additions = 0;
   let deletions = 0;
   for (const file of files) {

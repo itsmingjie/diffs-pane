@@ -1,46 +1,23 @@
-import { constants, createReadStream, existsSync, statSync } from 'node:fs';
-import { lstat, open, realpath, type FileHandle } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import {
-  dirname,
-  extname,
-  isAbsolute,
-  join,
-  normalize,
-  resolve as resolvePath,
-  sep,
-} from 'node:path';
+import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import {
-  anchorTextForRange,
-  hunkExcerptForRange,
-  parsePatch,
-  reconstructOldContents,
-} from '../shared/patch.js';
+import { anchorTextForRange, hunkExcerptForRange, parsePatch } from '../shared/patch.js';
 import {
   isDiffFilter,
   type ApplyEditsRequest,
-  type FileContentsPayload,
   type NewCommentRequest,
-  type SaveFileRequest,
   type StatusExport,
   type UpdateCommentRequest,
 } from '../shared/protocol.js';
 import { checkMutationOrigin, checkTransport, readBody } from './security.js';
-import { VcsError } from '../vcs/types.js';
+import { applyEdits, editErrorStatus, readEditableFile } from './edits.js';
 import { type SessionManager, timingSafeEqualString, DEFAULT_OWNER } from './sessions.js';
 
 const UI_DIR = fileURLToPath(new URL('../ui', import.meta.url));
 
-/** Body cap for `PUT api/file` saves; matches the daemon patch size limit. */
-const MAX_SAVE_BODY_BYTES = 24 * 1024 * 1024;
-/** Full-file hydration duplicates both sides in memory and JSON. Bound it
- * independently from patch size so a one-line diff in a huge file stays safe. */
-const MAX_EDIT_FILE_BYTES = Number(
-  process.env['DIFFS_PANE_MAX_EDIT_FILE_BYTES'] ?? 10 * 1024 * 1024,
-);
+const MAX_EDIT_BODY_BYTES = 24 * 1024 * 1024;
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -176,18 +153,25 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       return sendJson(res, 201, comment);
     }
 
-    if (subPath === '/api/file' && (method === 'GET' || method === 'PUT')) {
-      if (method === 'PUT') {
-        return session.applyEdits(() => handleFile(req, res, url, method, session));
+    if (subPath === '/api/file' && method === 'GET') {
+      const filter = url.searchParams.get('filter') ?? session.defaultFilter;
+      if (!isDiffFilter(filter)) return sendJson(res, 400, { error: `invalid filter: ${filter}` });
+      const path = url.searchParams.get('path');
+      if (!path) return sendJson(res, 400, { error: 'path is required' });
+      try {
+        return sendJson(res, 200, await readEditableFile(session, filter, path));
+      } catch (error) {
+        return sendJson(res, editErrorStatus(error), {
+          error: error instanceof Error ? error.message : 'Unable to read file',
+        });
       }
-      return handleFile(req, res, url, method, session);
     }
 
     if (
       method === 'POST' &&
       (subPath === '/api/edits/commit' || subPath === '/api/edits/discard')
     ) {
-      return session.applyEdits(() => handleEdits(req, res, session, subPath.endsWith('/commit')));
+      return handleEdits(req, res, session, subPath.endsWith('/commit') ? 'commit' : 'discard');
     }
 
     const commentMatch = /^\/api\/comments\/([A-Za-z0-9-]+)$/.exec(subPath);
@@ -219,9 +203,9 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     req: IncomingMessage,
     res: ServerResponse,
     session: SessionType,
-    commit: boolean,
+    action: 'commit' | 'discard',
   ): Promise<void> {
-    const body = await parseJsonBody<ApplyEditsRequest>(req, MAX_SAVE_BODY_BYTES);
+    const body = await parseJsonBody<ApplyEditsRequest>(req, MAX_EDIT_BODY_BYTES);
     if (
       !body ||
       !isDiffFilter(body.filter) ||
@@ -241,192 +225,14 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         error: 'filter and unique files with contents and expectedContentsHash are required',
       });
     }
-    const opened: Array<{
-      handle: FileHandle;
-      path: string;
-      original: string;
-      contents: string;
-    }> = [];
-    const commitPaths = new Set<string>();
     try {
-      const patch = await session.getPatch(body.filter);
-      // Validate the entire batch before writing anything, including stale
-      // versions, symlinks, and files that are no longer in the diff.
-      for (const file of body.files) {
-        const summary = patch.files.find((entry) => entry.path === file.path);
-        if (!summary || summary.binary || summary.kind === 'deleted') {
-          throw new FileAccessError(`file is not editable in this diff: ${file.path}`, 422);
-        }
-        const abs = resolveWorkTreePath(session.root, file.path);
-        if (!abs) throw new FileAccessError(`invalid path: ${file.path}`, 400);
-        if (Buffer.byteLength(file.contents) > MAX_EDIT_FILE_BYTES) {
-          throw new FileAccessError(`file exceeds the edit limit: ${file.path}`, 413);
-        }
-        const fileHandle = await openRegularWorkTreeFile(session.root, abs, constants.O_RDWR);
-        const entry = {
-          handle: fileHandle,
-          path: abs,
-          original: '',
-          contents: file.contents,
-        };
-        opened.push(entry);
-        if ((await fileHandle.stat()).size > MAX_EDIT_FILE_BYTES) {
-          throw new FileAccessError(`file exceeds the edit limit: ${file.path}`, 413);
-        }
-        entry.original = await fileHandle.readFile('utf8');
-        if (hashContents(entry.original) !== file.expectedContentsHash) {
-          throw new FileAccessError(
-            `file changed on disk while you were editing: ${file.path}`,
-            409,
-          );
-        }
-        commitPaths.add(file.path);
-        if (summary.prevPath) commitPaths.add(summary.prevPath);
-      }
-      if (commit) {
-        try {
-          for (const file of opened) await writeFileContents(file.handle, file.contents);
-          await session.commitFiles([...commitPaths]);
-        } catch (error) {
-          if (error instanceof VcsError && error.committed) {
-            return sendJson(res, 200, { ok: true, warning: error.message });
-          }
-          // A rejected commit (e.g. a failing hook) must not strand half-saved
-          // drafts. Do not overwrite a concurrent external write on rollback.
-          for (const file of opened) {
-            const current = await openRegularWorkTreeFile(
-              session.root,
-              file.path,
-              constants.O_RDWR,
-            );
-            try {
-              if ((await current.readFile('utf8')) === file.contents) {
-                await writeFileContents(current, file.original);
-              }
-            } finally {
-              await current.close();
-            }
-          }
-          throw error;
-        }
-      } else {
-        await session.discardFiles([...commitPaths]);
-      }
-      sendJson(res, 200, { ok: true });
+      const result = await session.runEdit(() => applyEdits(session, body, action));
+      sendJson(res, 200, result);
     } catch (error) {
-      sendJson(res, fileAccessStatus(error), {
+      sendJson(res, editErrorStatus(error), {
         error: error instanceof Error ? error.message : 'Unable to apply local edits',
       });
-    } finally {
-      await Promise.all(opened.map((file) => file.handle.close()));
     }
-  }
-
-  /** Read full file contents and save edited contents. */
-  async function handleFile(
-    req: IncomingMessage,
-    res: ServerResponse,
-    url: URL,
-    method: string,
-    session: SessionType,
-  ): Promise<void> {
-    if (method === 'GET') {
-      const filter = url.searchParams.get('filter') ?? session.defaultFilter;
-      if (!isDiffFilter(filter)) return sendJson(res, 400, { error: `invalid filter: ${filter}` });
-      const path = url.searchParams.get('path');
-      if (!path) return sendJson(res, 400, { error: 'path is required' });
-
-      const patch = await session.getPatch(filter);
-      const file = parsePatch(patch.patch).find((f) => f.path === path);
-      if (!file) return sendJson(res, 404, { error: `file not in ${filter} diff: ${path}` });
-      if (file.binary || file.kind === 'deleted') {
-        return sendJson(res, 422, { error: 'file has no editable text contents' });
-      }
-      const abs = resolveWorkTreePath(session.root, path);
-      if (!abs) return sendJson(res, 400, { error: `invalid path: ${path}` });
-
-      let newContents: string;
-      try {
-        const fileHandle = await openRegularWorkTreeFile(session.root, abs, constants.O_RDONLY);
-        try {
-          const fileStat = await fileHandle.stat();
-          if (fileStat.size > MAX_EDIT_FILE_BYTES) {
-            return sendJson(res, 413, {
-              error: `file exceeds the ${formatByteLimit(MAX_EDIT_FILE_BYTES)} edit limit`,
-            });
-          }
-          newContents = await fileHandle.readFile('utf8');
-        } finally {
-          await fileHandle.close();
-        }
-      } catch (error) {
-        return sendJson(res, fileAccessStatus(error), {
-          error:
-            error instanceof Error ? error.message : 'file changed on disk; retry after refresh',
-        });
-      }
-      let oldContents: string | null = null;
-      if (file.kind !== 'added') {
-        oldContents = reconstructOldContents(file, newContents);
-        if (oldContents === null) {
-          return sendJson(res, 409, {
-            error: 'work tree changed since the diff was computed; retry after refresh',
-          });
-        }
-      }
-      const payload: FileContentsPayload = {
-        filter,
-        path,
-        patchHash: patch.patchHash,
-        oldContents,
-        newContents,
-        newContentsHash: hashContents(newContents),
-      };
-      return sendJson(res, 200, payload);
-    }
-
-    // PUT: save edited contents back to the work tree.
-    const body = await parseJsonBody<SaveFileRequest>(req, MAX_SAVE_BODY_BYTES);
-    if (
-      !body ||
-      typeof body.path !== 'string' ||
-      typeof body.contents !== 'string' ||
-      typeof body.expectedContentsHash !== 'string' ||
-      !/^[0-9a-f]{64}$/.test(body.expectedContentsHash)
-    ) {
-      return sendJson(res, 400, {
-        error: 'path, contents, and expectedContentsHash are required',
-      });
-    }
-    if (!isDiffFilter(body.filter)) return sendJson(res, 400, { error: 'invalid filter' });
-    const summary = (await session.getPatch(body.filter)).files.find((f) => f.path === body.path);
-    if (!summary) {
-      return sendJson(res, 422, { error: `file not in ${body.filter} diff: ${body.path}` });
-    }
-    if (summary.binary || summary.kind === 'deleted') {
-      return sendJson(res, 422, { error: 'file is not editable' });
-    }
-    const abs = resolveWorkTreePath(session.root, body.path);
-    if (!abs) return sendJson(res, 400, { error: `invalid path: ${body.path}` });
-    try {
-      const fileHandle = await openRegularWorkTreeFile(session.root, abs, constants.O_RDWR);
-      try {
-        const currentContents = await fileHandle.readFile('utf8');
-        if (hashContents(currentContents) !== body.expectedContentsHash) {
-          return sendJson(res, 409, {
-            error: 'file changed on disk while you were editing; reload before saving',
-          });
-        }
-        await writeFileContents(fileHandle, body.contents);
-      } finally {
-        await fileHandle.close();
-      }
-    } catch (error) {
-      return sendJson(res, fileAccessStatus(error), {
-        error: error instanceof Error ? error.message : 'file changed on disk; retry after refresh',
-      });
-    }
-    return sendJson(res, 200, { ok: true, contentsHash: hashContents(body.contents) });
   }
 
   async function handleControl(
@@ -624,85 +430,6 @@ function listen(server: Server, port: number): Promise<void> {
 
 function isAddressInUse(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && 'code' in error && error.code === 'EADDRINUSE';
-}
-
-/** Resolve a diff-relative path inside the session root, rejecting escapes. */
-function resolveWorkTreePath(root: string, relPath: string): string | null {
-  if (relPath === '' || relPath.includes('\0') || isAbsolute(relPath)) return null;
-  const rootAbs = resolvePath(root);
-  const abs = resolvePath(rootAbs, relPath);
-  if (abs === rootAbs || !isInside(rootAbs, abs)) return null;
-  return abs;
-}
-
-/** Open one existing regular file without following its final path component.
- * Resolve both the root and target first so intermediate symlinks cannot lead
- * outside the worktree. */
-async function openRegularWorkTreeFile(
-  root: string,
-  path: string,
-  flags: number,
-): Promise<FileHandle> {
-  const [rootReal, parentReal, pathStat] = await Promise.all([
-    realpath(root),
-    realpath(dirname(path)),
-    lstat(path),
-  ]);
-  if ((parentReal !== rootReal && !isInside(rootReal, parentReal)) || !pathStat.isFile()) {
-    throw new FileAccessError('only regular files inside the worktree are editable', 422);
-  }
-  const targetReal = await realpath(path);
-  if (!isInside(rootReal, targetReal)) {
-    throw new FileAccessError('file resolves outside the worktree', 422);
-  }
-  const handle = await open(path, flags | (constants.O_NOFOLLOW ?? 0));
-  try {
-    const openedStat = await handle.stat();
-    if (!openedStat.isFile()) {
-      throw new FileAccessError('only regular files are editable', 422);
-    }
-    return handle;
-  } catch (error) {
-    await handle.close();
-    throw error;
-  }
-}
-
-function isInside(root: string, path: string): boolean {
-  return path !== root && path.startsWith(root.endsWith(sep) ? root : root + sep);
-}
-
-class FileAccessError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-  }
-}
-
-function fileAccessStatus(error: unknown): number {
-  if (error instanceof FileAccessError) return error.status;
-  if (error instanceof Error && 'code' in error && error.code === 'ELOOP') return 422;
-  return 409;
-}
-
-function hashContents(contents: string): string {
-  return createHash('sha256').update(contents).digest('hex');
-}
-
-async function writeFileContents(handle: FileHandle, contents: string): Promise<void> {
-  const bytes = Buffer.from(contents);
-  let offset = 0;
-  while (offset < bytes.length) {
-    const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset);
-    offset += bytesWritten;
-  }
-  await handle.truncate(bytes.length);
-}
-
-function formatByteLimit(bytes: number): string {
-  return `${Math.round(bytes / 1024 / 1024)}MB`;
 }
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {

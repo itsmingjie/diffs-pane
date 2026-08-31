@@ -9,7 +9,6 @@ import type {
   FileContentsPayload,
   PatchPayload,
   ReviewComment,
-  SaveFileResponse,
   SessionInfo,
 } from '../src/shared/protocol.js';
 import { cleanup, makeGitRepo, makeTempDir, waitFor, writeFileSyncDeep } from './helpers.js';
@@ -235,11 +234,10 @@ describe('daemon server', () => {
     expect(patch.error).toBeNull();
     expect(patch.files.map((f) => f.path)).toContain('src/app.ts');
     // Section hashes let the UI reuse parsed state for unchanged files.
-    expect(patch.files.every((f) => /^[0-9a-f]{32}$/.test(f.sectionHash ?? ''))).toBe(true);
+    expect(patch.files.every((f) => /^[0-9a-f]{32}$/.test(f.sectionHash))).toBe(true);
   });
 
-  it('hydrates and saves regular files without overwriting concurrent changes', async () => {
-    const origin = `http://127.0.0.1:${daemon.port}`;
+  it('hydrates regular files for editing', async () => {
     const filePath = join(repo, 'edit.txt');
     writeFileSyncDeep(filePath, 'one\n');
     await waitFor(async () => {
@@ -259,32 +257,6 @@ describe('daemon server', () => {
     expect(contents.oldContents).toBeNull();
     expect(contents.newContents).toBe('one\n');
     expect(contents.newContentsHash).toMatch(/^[0-9a-f]{64}$/);
-
-    const save = await rawRequest(daemon.port, 'PUT', `/s/${token}/api/file`, {
-      headers: { 'content-type': 'application/json', origin },
-      body: JSON.stringify({
-        filter: 'unstaged',
-        path: 'edit.txt',
-        contents: 'two\n',
-        expectedContentsHash: contents.newContentsHash,
-      }),
-    });
-    expect(save.status).toBe(200);
-    expect((JSON.parse(save.body) as SaveFileResponse).contentsHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(readFileSync(filePath, 'utf8')).toBe('two\n');
-
-    writeFileSyncDeep(filePath, 'external\n');
-    const staleSave = await rawRequest(daemon.port, 'PUT', `/s/${token}/api/file`, {
-      headers: { 'content-type': 'application/json', origin },
-      body: JSON.stringify({
-        filter: 'unstaged',
-        path: 'edit.txt',
-        contents: 'three\n',
-        expectedContentsHash: contents.newContentsHash,
-      }),
-    });
-    expect(staleSave.status).toBe(409);
-    expect(readFileSync(filePath, 'utf8')).toBe('external\n');
   });
 
   it('rejects symlinked files in edit endpoints', async () => {
@@ -309,19 +281,6 @@ describe('daemon server', () => {
         `/s/${token}/api/file?filter=unstaged&path=outside-link.txt`,
       );
       expect(result.status).toBe(422);
-      const save = await rawRequest(daemon.port, 'PUT', `/s/${token}/api/file`, {
-        headers: {
-          'content-type': 'application/json',
-          origin: `http://127.0.0.1:${daemon.port}`,
-        },
-        body: JSON.stringify({
-          filter: 'unstaged',
-          path: 'outside-link.txt',
-          contents: 'overwritten\n',
-          expectedContentsHash: '0'.repeat(64),
-        }),
-      });
-      expect(save.status).toBe(422);
       expect(readFileSync(outside, 'utf8')).toBe('private\n');
     } finally {
       unlinkSync(link);

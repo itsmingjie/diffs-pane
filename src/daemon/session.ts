@@ -163,8 +163,8 @@ export class Session {
 
   private editOperation: Promise<void> = Promise.resolve();
 
-  /** Serialize browser mutations, including saves from older clients. */
-  applyEdits<T>(operation: () => Promise<T>): Promise<T> {
+  /** Serialize work-tree mutations from browser edit actions. */
+  runEdit<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.editOperation.then(operation);
     this.editOperation = result.then(
       () => undefined,
@@ -263,11 +263,15 @@ export class Session {
         patch,
         // Per-file hashes let the UI reuse parsed and rendered state for
         // files whose section did not change in a refresh.
-        files: summarizeFiles(parsedFiles).map((summary, index) =>
-          Object.assign(summary, {
-            sectionHash: sha256(parsedFiles[index]!.raw).slice(0, 32),
-          }),
-        ),
+        files: summarizeFiles(parsedFiles).map((summary, index) => ({
+          path: summary.path,
+          prevPath: summary.prevPath,
+          kind: summary.kind,
+          additions: summary.additions,
+          deletions: summary.deletions,
+          binary: summary.binary,
+          sectionHash: sha256(parsedFiles[index]!.raw).slice(0, 32),
+        })),
         error: null,
         generatedAt,
       };

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
-import { copyFile, mkdtemp, rm } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
+import { access, copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 
@@ -223,15 +223,20 @@ export class GitBackend implements VcsBackend {
       await this.git(head ? ['read-tree', head] : ['read-tree', '--empty'], { env });
       // A rename's old path may already have been removed by an earlier
       // commit when viewing the full branch diff.
-      for (const path of paths) {
-        const spec = `:(literal)${path}`;
-        if (
-          existsSync(join(this.root, path)) ||
-          (await this.git(['ls-files', '-z', '--', spec], { env })).stdout
-        ) {
-          pathspecs.push(spec);
-        }
-      }
+      pathspecs = (
+        await Promise.all(
+          paths.map(async (path) => {
+            const spec = `:(literal)${path}`;
+            const exists = await access(join(this.root, path)).then(
+              () => true,
+              () => false,
+            );
+            return exists || (await this.git(['ls-files', '-z', '--', spec], { env })).stdout
+              ? spec
+              : null;
+          }),
+        )
+      ).filter((spec): spec is string => spec !== null);
       await this.git(['add', '-A', '--', ...pathspecs], { env });
       await this.git(['commit', '--allow-empty', '-m', 'dp: apply local edits'], { env });
     } finally {

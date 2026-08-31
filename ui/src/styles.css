@@ -899,7 +899,7 @@ body,
   height: 7px;
   flex: none;
   border-radius: 50%;
-  background: #e9b949;
+  background: var(--warning);
 }
 
 .edit-action:disabled {
