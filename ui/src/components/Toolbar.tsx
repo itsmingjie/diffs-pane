@@ -77,7 +77,6 @@ export function Toolbar({
       </button>
       <div className="toolbar-title" title={session.root}>
         <span className="repo-name">{repoName}</span>
-        <span className="vcs-badge">{session.vcs}</span>
       </div>
       <label className="source-select">
         <span className="sr-only">Diff source</span>

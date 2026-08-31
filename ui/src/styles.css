@@ -140,14 +140,6 @@ body,
   white-space: nowrap;
 }
 
-.vcs-badge {
-  font-size: 11px;
-  padding: 1px 6px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text-dim);
-}
-
 .source-select {
   position: relative;
   display: inline-flex;
@@ -1072,10 +1064,6 @@ body,
 
   .toolbar-title {
     max-width: 34vw;
-  }
-
-  .toolbar-title .vcs-badge {
-    display: none;
   }
 
   .source-select {
