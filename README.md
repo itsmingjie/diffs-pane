@@ -164,7 +164,8 @@ Selecting lines updates the URL:
 `A` addresses the additions side and `D` the deletions side. Live
 `dp reviews --json` output includes the corresponding URL for each comment.
 
-Text diffs are editable without switching modes. Edits stay in the browser until
+Text diffs are editable without switching modes: click into a file's code to
+start editing it. Edits stay in the browser until
 you click **Commit** in the top-right toolbar or press **Cmd+S** (**Ctrl+S** on
 Windows/Linux). Yellow dots identify edited files;
 the expanded Diff Stats panel includes **Unsaved files** and live addition/deletion
