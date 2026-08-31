@@ -82,6 +82,11 @@
   box-sizing: border-box;
 }
 
+:focus,
+:focus-visible {
+  outline: none;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -171,11 +176,6 @@ body,
   height: 15px;
   color: var(--text-dim);
   pointer-events: none;
-}
-
-.source-select select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
 }
 
 .tab {
@@ -329,11 +329,6 @@ body,
   pointer-events: none;
 }
 
-.display-theme-select select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .display-font-settings {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -369,12 +364,6 @@ body,
   padding: 4px 8px;
 }
 
-.display-field input:focus-visible,
-.display-field select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .switch {
   position: relative;
   width: 32px;
@@ -401,12 +390,6 @@ body,
 
 .display-option-row[aria-checked='true'] .switch > span {
   transform: translateX(14px);
-}
-
-.display-layout button:focus-visible,
-.display-option-row:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .connection {
@@ -527,13 +510,6 @@ body,
   background: var(--surface);
 }
 
-.icon-button:focus-visible,
-.collapse-button:focus-visible,
-.comment-action-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .tree-host {
   flex: 1;
   min-height: 120px;
@@ -603,7 +579,7 @@ body,
 }
 
 .comments-section-path {
-  margin: 14px 2px 6px;
+  margin: 14px 12px 6px;
   font-size: 12px;
   font-weight: 500;
   font-family: var(--font-interface);
@@ -645,7 +621,7 @@ body,
 .comment-header {
   display: block;
   font-size: 12px;
-  color: var(--text-dim);
+  color: color-mix(in srgb, var(--text-dim) 65%, transparent);
   margin-bottom: 2px;
 }
 
