@@ -161,6 +161,26 @@ export class Session {
     return this.reviews.list();
   }
 
+  private editOperation: Promise<void> = Promise.resolve();
+
+  /** Serialize browser mutations, including saves from older clients. */
+  applyEdits<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.editOperation.then(operation);
+    this.editOperation = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result.finally(() => this.handleFsChange());
+  }
+
+  commitFiles(paths: string[]): Promise<void> {
+    return this.backend.commitFiles(paths);
+  }
+
+  discardFiles(paths: string[]): Promise<void> {
+    return this.backend.discardFiles(paths);
+  }
+
   // ── Patch computation ────────────────────────────────────────────────
 
   /** Serve the patch for a filter, recomputing only when stale. */

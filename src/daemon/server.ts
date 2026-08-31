@@ -21,6 +21,7 @@ import {
 } from '../shared/patch.js';
 import {
   isDiffFilter,
+  type ApplyEditsRequest,
   type FileContentsPayload,
   type NewCommentRequest,
   type SaveFileRequest,
@@ -28,6 +29,7 @@ import {
   type UpdateCommentRequest,
 } from '../shared/protocol.js';
 import { checkMutationOrigin, checkTransport, readBody } from './security.js';
+import { VcsError } from '../vcs/types.js';
 import { type SessionManager, timingSafeEqualString, DEFAULT_OWNER } from './sessions.js';
 
 const UI_DIR = fileURLToPath(new URL('../ui', import.meta.url));
@@ -175,7 +177,17 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     }
 
     if (subPath === '/api/file' && (method === 'GET' || method === 'PUT')) {
+      if (method === 'PUT') {
+        return session.applyEdits(() => handleFile(req, res, url, method, session));
+      }
       return handleFile(req, res, url, method, session);
+    }
+
+    if (
+      method === 'POST' &&
+      (subPath === '/api/edits/commit' || subPath === '/api/edits/discard')
+    ) {
+      return session.applyEdits(() => handleEdits(req, res, session, subPath.endsWith('/commit')));
     }
 
     const commentMatch = /^\/api\/comments\/([A-Za-z0-9-]+)$/.exec(subPath);
@@ -203,7 +215,114 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     sendJson(res, 405, { error: 'method not allowed' });
   }
 
-  /** Edit-mode support: read full file contents and save edited contents. */
+  async function handleEdits(
+    req: IncomingMessage,
+    res: ServerResponse,
+    session: SessionType,
+    commit: boolean,
+  ): Promise<void> {
+    const body = await parseJsonBody<ApplyEditsRequest>(req, MAX_SAVE_BODY_BYTES);
+    if (
+      !body ||
+      !isDiffFilter(body.filter) ||
+      !Array.isArray(body.files) ||
+      body.files.length === 0 ||
+      body.files.some(
+        (file) =>
+          !file ||
+          typeof file.path !== 'string' ||
+          typeof file.contents !== 'string' ||
+          typeof file.expectedContentsHash !== 'string' ||
+          !/^[0-9a-f]{64}$/.test(file.expectedContentsHash),
+      ) ||
+      new Set(body.files.map((file) => file.path)).size !== body.files.length
+    ) {
+      return sendJson(res, 400, {
+        error: 'filter and unique files with contents and expectedContentsHash are required',
+      });
+    }
+    const opened: Array<{
+      handle: FileHandle;
+      path: string;
+      original: string;
+      contents: string;
+    }> = [];
+    const commitPaths = new Set<string>();
+    try {
+      const patch = await session.getPatch(body.filter);
+      // Validate the entire batch before writing anything, including stale
+      // versions, symlinks, and files that are no longer in the diff.
+      for (const file of body.files) {
+        const summary = patch.files.find((entry) => entry.path === file.path);
+        if (!summary || summary.binary || summary.kind === 'deleted') {
+          throw new FileAccessError(`file is not editable in this diff: ${file.path}`, 422);
+        }
+        const abs = resolveWorkTreePath(session.root, file.path);
+        if (!abs) throw new FileAccessError(`invalid path: ${file.path}`, 400);
+        if (Buffer.byteLength(file.contents) > MAX_EDIT_FILE_BYTES) {
+          throw new FileAccessError(`file exceeds the edit limit: ${file.path}`, 413);
+        }
+        const fileHandle = await openRegularWorkTreeFile(session.root, abs, constants.O_RDWR);
+        const entry = {
+          handle: fileHandle,
+          path: abs,
+          original: '',
+          contents: file.contents,
+        };
+        opened.push(entry);
+        if ((await fileHandle.stat()).size > MAX_EDIT_FILE_BYTES) {
+          throw new FileAccessError(`file exceeds the edit limit: ${file.path}`, 413);
+        }
+        entry.original = await fileHandle.readFile('utf8');
+        if (hashContents(entry.original) !== file.expectedContentsHash) {
+          throw new FileAccessError(
+            `file changed on disk while you were editing: ${file.path}`,
+            409,
+          );
+        }
+        commitPaths.add(file.path);
+        if (summary.prevPath) commitPaths.add(summary.prevPath);
+      }
+      if (commit) {
+        try {
+          for (const file of opened) await writeFileContents(file.handle, file.contents);
+          await session.commitFiles([...commitPaths]);
+        } catch (error) {
+          if (error instanceof VcsError && error.committed) {
+            return sendJson(res, 200, { ok: true, warning: error.message });
+          }
+          // A rejected commit (e.g. a failing hook) must not strand half-saved
+          // drafts. Do not overwrite a concurrent external write on rollback.
+          for (const file of opened) {
+            const current = await openRegularWorkTreeFile(
+              session.root,
+              file.path,
+              constants.O_RDWR,
+            );
+            try {
+              if ((await current.readFile('utf8')) === file.contents) {
+                await writeFileContents(current, file.original);
+              }
+            } finally {
+              await current.close();
+            }
+          }
+          throw error;
+        }
+      } else {
+        await session.discardFiles([...commitPaths]);
+      }
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      sendJson(res, fileAccessStatus(error), {
+        error: error instanceof Error ? error.message : 'Unable to apply local edits',
+      });
+    } finally {
+      await Promise.all(opened.map((file) => file.handle.close()));
+    }
+  }
+
+  /** Read full file contents and save edited contents. */
   async function handleFile(
     req: IncomingMessage,
     res: ServerResponse,

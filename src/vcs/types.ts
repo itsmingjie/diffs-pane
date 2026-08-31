@@ -18,7 +18,10 @@ export interface ComputeOptions {
 
 /** A recoverable VCS failure that should be surfaced in the UI. */
 export class VcsError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly committed = false,
+  ) {
     super(message);
     this.name = 'VcsError';
   }
@@ -33,4 +36,8 @@ export interface VcsBackend {
   captureTurnBaseline(signal?: AbortSignal): Promise<TurnBaseline>;
   /** Repo metadata paths (relative to root) that should trigger refreshes. */
   metadataDirs(): string[];
+  /** Commit only these work-tree paths, leaving unrelated changes alone. */
+  commitFiles(paths: string[]): Promise<void>;
+  /** Restore only these paths to HEAD (Git) or the working-copy parent (jj). */
+  discardFiles(paths: string[]): Promise<void>;
 }

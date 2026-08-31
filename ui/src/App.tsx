@@ -1,6 +1,7 @@
-import { ChevronDownIcon, Pencil1Icon } from '@radix-ui/react-icons';
+import { ChevronDownIcon } from '@radix-ui/react-icons';
 import {
   parsePatchFiles,
+  parseDiffFromFile,
   type CodeViewItem,
   type CodeViewLineSelection,
   type CodeViewOptions,
@@ -10,7 +11,7 @@ import {
   type LineAnnotation,
   type SelectedLineRange,
 } from '@pierre/diffs';
-import type { Editor, EditorOptions } from '@pierre/diffs/edit';
+import type { Editor } from '@pierre/diffs/edit';
 import {
   CodeView,
   EditProvider,
@@ -20,6 +21,8 @@ import {
   type CreateEditor,
 } from '@pierre/diffs/react';
 import {
+  createContext,
+  useContext,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -28,7 +31,6 @@ import {
   useState,
   type CSSProperties,
 } from 'react';
-import { flushSync } from 'react-dom';
 
 import type {
   DiffFilter,
@@ -70,15 +72,6 @@ const CODE_VIEW_UNSAFE_CSS = `
     pointer-events: none;
   }
 
-  /* Review controls do not apply while the new side is an editor. */
-  [data-diff]:has([data-content][contenteditable='true']) [data-gutter-utility-slot] {
-    display: none !important;
-  }
-
-  [data-diff]:has([data-content][contenteditable='true']) :is([data-column-number], [data-gutter-buffer]) {
-    cursor: default;
-    pointer-events: none;
-  }
 `;
 
 interface EditModule {
@@ -88,7 +81,7 @@ interface EditModule {
 let editModule: EditModule | undefined;
 let editModulePromise: Promise<EditModule> | undefined;
 
-/** Load the optional editor only when someone starts editing. */
+/** Load the editor as text diffs become available. */
 async function loadEditModule(): Promise<EditModule> {
   if (editModule) return editModule;
   try {
@@ -112,15 +105,6 @@ const createEditor: CreateEditor<AnnotationMeta> = (options) => {
   if (!editModule) throw new Error('Editor module has not loaded');
   return new editModule.Editor(options);
 };
-
-const EDITOR_OPTIONS: Omit<EditorOptions<AnnotationMeta>, 'onChange'> = {
-  onAttach(editor) {
-    editor.focus({ lineNumber: 'first-visible', preventScroll: true });
-  },
-};
-
-const IS_MAC = /Mac|iP/.test(navigator.platform);
-const SAVE_SHORTCUT_LABEL = IS_MAC ? '⌘S' : 'Ctrl+S';
 
 /** Safety window for a post-save patch refresh. User scroll gestures release
  * the pin immediately. */
@@ -149,7 +133,15 @@ interface EditSession {
   annotations: DiffAnnotation[];
   /** Bumped whenever the session's item must re-render. */
   rev: number;
+  sectionHash: string;
+  summary: PatchFileSummary;
+  original: FileContentsPayload;
 }
+
+const FileHeadersContext = createContext<{
+  files: ReadonlyMap<string, PatchFileSummary>;
+  dirtyPaths: ReadonlySet<string>;
+}>({ files: new Map(), dirtyPaths: new Set() });
 
 export function App() {
   const workerPool = useWorkerPool();
@@ -175,20 +167,19 @@ export function App() {
   const [editSessions, setEditSessions] = useState<ReadonlyMap<string, EditSession>>(new Map());
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [savingCount, setSavingCount] = useState(0);
+  const [pendingAction, setPendingAction] = useState<'commit' | 'discard' | null>(null);
+  const [liveStats, setLiveStats] = useState<ReadonlyMap<string, FileDiffMetadata>>(new Map());
   const [editorLoadingCount, setEditorLoadingCount] = useState(0);
 
   const viewerRef = useRef<CodeViewHandle<AnnotationMeta> | null>(null);
   /** Latest edited contents per path, fed by onItemEditChange. */
   const editedFilesRef = useRef(new Map<string, FileContents>());
-  /** Guards against repeated Save clicks and key-repeat issuing duplicate writes. */
-  const savingPathsRef = useRef(new Set<string>());
+  const actionPendingRef = useRef(false);
   const loadingEditorPathsRef = useRef(new Set<string>());
   const fileContentsByDiffRef = useRef(
     new WeakMap<FileDiffMetadata, Promise<FileContentsPayload>>(),
   );
   const expectedContentsHashesRef = useRef(new Map<string, string>());
-  const editRevisionsRef = useRef(new Map<string, number>());
   /** Viewport pin captured when an edit session ends, held across the exit
    * re-render and the follow-up patch refresh. */
   const scrollAnchorRef = useRef<{
@@ -310,13 +301,11 @@ export function App() {
     setEditSessions(new Map());
     setDirtyPaths(new Set());
     setSaveError(null);
-    setSavingCount(0);
+    setLiveStats(new Map());
     setEditorLoadingCount(0);
     editedFilesRef.current.clear();
-    savingPathsRef.current.clear();
     loadingEditorPathsRef.current.clear();
     expectedContentsHashesRef.current.clear();
-    editRevisionsRef.current.clear();
   }, [activeFilter]);
 
   // ── Parse the patch with @pierre/diffs ───────────────────────────────
@@ -363,17 +352,49 @@ export function App() {
     return out;
   }, [patch]);
 
+  const displayedFiles = useMemo(() => {
+    const files = [...(patch?.files ?? [])];
+    for (const [path, edit] of editSessions) {
+      if (dirtyPaths.has(path) && !files.some((file) => file.path === path))
+        files.push(edit.summary);
+    }
+    return files.map((file) => {
+      const diff = liveStats.get(file.path);
+      if (!diff) return file;
+      return Object.assign({}, file, {
+        additions: diff.hunks.reduce((sum, hunk) => sum + hunk.additionLines, 0),
+        deletions: diff.hunks.reduce((sum, hunk) => sum + hunk.deletionLines, 0),
+      });
+    });
+  }, [patch?.files, editSessions, dirtyPaths, liveStats]);
   const filesByPath = useMemo(
-    () => new Map((patch?.files ?? []).map((f) => [f.path, f])),
-    [patch?.files],
+    () => new Map(displayedFiles.map((file) => [file.path, file])),
+    [displayedFiles],
+  );
+  const fileHeaders = useMemo(
+    () => ({ files: filesByPath, dirtyPaths }),
+    [filesByPath, dirtyPaths],
   );
   const parsedFilesByPath = useMemo(
     () => new Map(parsedFiles.map((file) => [file.path, file])),
     [parsedFiles],
   );
+  const displayedParsedFiles = useMemo(() => {
+    const files = [...parsedFiles];
+    for (const [path, edit] of editSessions) {
+      if (dirtyPaths.has(path) && !files.some((file) => file.path === path)) {
+        files.push({ path, fileDiff: edit.fileDiff, sectionHash: edit.sectionHash });
+      }
+    }
+    return files;
+  }, [parsedFiles, editSessions, dirtyPaths]);
   const totalLines = useMemo(
-    () => parsedFiles.reduce((sum, file) => sum + file.fileDiff.unifiedLineCount, 0),
-    [parsedFiles],
+    () =>
+      displayedParsedFiles.reduce(
+        (sum, file) => sum + (liveStats.get(file.path) ?? file.fileDiff).unifiedLineCount,
+        0,
+      ),
+    [displayedParsedFiles, liveStats],
   );
 
   const filterComments = useMemo(
@@ -389,15 +410,16 @@ export function App() {
 
   const versionsRef = useRef(new Map<string, { version: number; key: string }>());
   const items = useMemo<CodeViewItem<AnnotationMeta>[]>(() => {
-    return parsedFiles.map(({ path, fileDiff, sectionHash }) => {
+    return displayedParsedFiles.map(({ path, fileDiff, sectionHash }) => {
       const id = `f:${path}`;
       const editSession = editSessions.get(path);
-      const annotations = editSession
-        ? editSession.annotations
-        : (annotationsByPath.get(path) ?? []);
-      const collapsed = editSession === undefined && collapsedPaths.has(path);
+      const annotations =
+        editSession && dirtyPaths.has(path)
+          ? editSession.annotations
+          : (annotationsByPath.get(path) ?? []);
+      const collapsed = collapsedPaths.has(path);
       const key = editSession
-        ? `edit|${editSession.rev}|${dirtyPaths.has(path) ? 1 : 0}`
+        ? `edit|${editSession.sectionHash}|${editSession.rev}|${collapsed ? 1 : 0}|${annotationsKey(annotations)}`
         : `${sectionHash}|${collapsed ? 1 : 0}|${annotationsKey(annotations)}`;
       const entry = versionsRef.current.get(id);
       let version = entry?.version ?? 1;
@@ -415,7 +437,7 @@ export function App() {
         edit: editSession !== undefined,
       };
     });
-  }, [parsedFiles, annotationsByPath, collapsedPaths, editSessions, dirtyPaths]);
+  }, [displayedParsedFiles, annotationsByPath, collapsedPaths, editSessions, dirtyPaths]);
 
   // Restore a line permalink once its target file is in the rendered patch.
   useEffect(() => {
@@ -434,7 +456,7 @@ export function App() {
 
   // ── Selection & permalinks ───────────────────────────────────────────
   const handleSelectedLinesChange = useStableCallback((selection: CodeViewLineSelection | null) => {
-    if (selection && editSessions.has(selection.id.slice(2))) {
+    if (selection && dirtyPaths.has(selection.id.slice(2))) {
       viewerRef.current?.clearSelectedLines();
       return;
     }
@@ -456,7 +478,12 @@ export function App() {
     // Keep a file collapsed above the viewport anchored in view.
     if (itemTop !== undefined && scrollTop !== undefined && itemTop < scrollTop) {
       requestAnimationFrame(() => {
-        viewerRef.current?.scrollTo({ type: 'item', id: `f:${path}`, align: 'start' });
+        viewerRef.current?.scrollTo({
+          type: 'item',
+          id: `f:${path}`,
+          align: 'start',
+          offset: CODE_VIEW_LAYOUT.paddingTop,
+        });
       });
     }
   });
@@ -584,9 +611,28 @@ export function App() {
       const contentsHash =
         fileContents.newContentsHash ?? (await hashContents(fileContents.newContents));
       expectedContentsHashesRef.current.set(path, contentsHash);
-      editRevisionsRef.current.set(path, 0);
+      // The editor needs full models, including for added files whose patch
+      // has no old-side rows. Hydrate before attaching any editor.
+      const fileDiff = parseDiffFromFile(
+        fileContents.oldContents === null
+          ? null
+          : {
+              name: summary.prevPath ?? path,
+              contents: fileContents.oldContents,
+              cacheKey: `${parsed.sectionHash}:old`,
+            },
+        { name: path, contents: fileContents.newContents, cacheKey: `${parsed.sectionHash}:new` },
+        { context: 3 },
+      );
       setEditSessions((prev) =>
-        new Map(prev).set(path, { fileDiff: parsed.fileDiff, annotations, rev: 0 }),
+        new Map(prev).set(path, {
+          fileDiff,
+          annotations,
+          rev: 0,
+          sectionHash: parsed.sectionHash,
+          summary,
+          original: fileContents,
+        }),
       );
       setSaveError(null);
     } catch (error) {
@@ -599,12 +645,16 @@ export function App() {
     }
   });
 
-  /** End a session without saving (also used after a successful save). */
+  /** Release a clean editor, or clear it after committing/discarding drafts. */
   const stopEditing = useStableCallback((path: string, waitForPatch = false) => {
     captureScrollAnchor(waitForPatch);
     editedFilesRef.current.delete(path);
     expectedContentsHashesRef.current.delete(path);
-    editRevisionsRef.current.delete(path);
+    setLiveStats((prev) => {
+      const next = new Map(prev);
+      next.delete(path);
+      return next;
+    });
     setEditSessions((prev) => {
       if (!prev.has(path)) return prev;
       const next = new Map(prev);
@@ -619,58 +669,47 @@ export function App() {
     });
   });
 
-  const saveEditingFile = useStableCallback(async (path: string, clearError = true) => {
-    if (savingPathsRef.current.has(path)) return;
-    if (clearError) setSaveError(null);
-    savingPathsRef.current.add(path);
-    setSavingCount((count) => count + 1);
-    try {
-      const file = editedFilesRef.current.get(path);
-      const expectedContentsHash = expectedContentsHashesRef.current.get(path);
-      const savedRevision = editRevisionsRef.current.get(path) ?? 0;
-      const saved = dirtyPaths.has(path) && file !== undefined;
-      if (saved) {
-        if (!expectedContentsHash)
-          throw new Error('file version is unavailable; reopen the editor');
-        const result = await api.saveFile({
-          filter: activeFilter,
-          path,
-          contents: file.contents,
-          expectedContentsHash,
-        });
-        expectedContentsHashesRef.current.set(
-          path,
-          result.contentsHash ?? (await hashContents(file.contents)),
-        );
-      }
-      const latestFile = editedFilesRef.current.get(path);
-      const unchangedDuringSave =
-        editRevisionsRef.current.get(path) === savedRevision &&
-        latestFile?.contents === file?.contents;
-      if (unchangedDuringSave) stopEditing(path, saved);
-      else setDirtyPaths((prev) => (prev.has(path) ? prev : new Set(prev).add(path)));
-    } catch (error) {
-      const message = `Failed to save ${path}: ${error instanceof Error ? error.message : String(error)}`;
-      setSaveError((current) => (current ? `${current}\n${message}` : message));
-    } finally {
-      savingPathsRef.current.delete(path);
-      setSavingCount((count) => Math.max(0, count - 1));
-    }
-  });
-
-  const saveAllEdits = useStableCallback(async () => {
-    setSaveError(null);
-    await Promise.all([...editSessions.keys()].map((path) => saveEditingFile(path, false)));
-  });
-
-  const discardEditing = useStableCallback((path: string) => {
-    if (dirtyPaths.has(path) && !window.confirm(`Discard unsaved changes to ${path}?`)) {
+  const applyLocalEdits = useStableCallback(async (action: 'commit' | 'discard') => {
+    if (actionPendingRef.current || dirtyPaths.size === 0) return;
+    if (
+      action === 'discard' &&
+      !window.confirm(
+        'Restore dp-edited files to their committed version? This also discards existing uncommitted changes in those files.',
+      )
+    )
       return;
+    actionPendingRef.current = true;
+    setPendingAction(action);
+    setSaveError(null);
+    const paths = [...dirtyPaths];
+    try {
+      const files = paths.map((path) => {
+        const file = editedFilesRef.current.get(path);
+        const expectedContentsHash = expectedContentsHashesRef.current.get(path);
+        if (!file || !expectedContentsHash) throw new Error(`File version is unavailable: ${path}`);
+        return { path, contents: file.contents, expectedContentsHash };
+      });
+      const result = await api.applyEdits(action, { filter: activeFilter, files });
+      captureScrollAnchor(true);
+      // Invalidate mutated models before loading the post-action patch, even
+      // when discarding brings a file back to the same section hash.
+      parsedFileCacheRef.current.clear();
+      fileContentsByDiffRef.current = new WeakMap();
+      for (const path of paths) stopEditing(path, true);
+      await loadPatch(activeFilter);
+      if (result.warning) setSaveError(result.warning);
+    } catch (error) {
+      setSaveError(
+        `Failed to ${action}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      actionPendingRef.current = false;
+      setPendingAction(null);
     }
-    stopEditing(path);
   });
 
   const changeFilter = useStableCallback((next: DiffFilter) => {
+    if (actionPendingRef.current) return;
     if (
       next !== activeFilter &&
       dirtyPaths.size > 0 &&
@@ -681,6 +720,22 @@ export function App() {
     setFilter(next);
   });
 
+  useEffect(() => {
+    const handleSave = (event: KeyboardEvent) => {
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        event.altKey ||
+        event.shiftKey ||
+        event.key.toLowerCase() !== 's'
+      )
+        return;
+      event.preventDefault();
+      if (!event.repeat) void applyLocalEdits('commit');
+    };
+    window.addEventListener('keydown', handleSave);
+    return () => window.removeEventListener('keydown', handleSave);
+  }, [applyLocalEdits]);
+
   const handleItemEditChange = useStableCallback(
     (
       item: CodeViewItem<AnnotationMeta>,
@@ -690,37 +745,56 @@ export function App() {
       const path = item.id.slice(2);
       const editSession = editSessions.get(path);
       if (!editSession) return;
-      editRevisionsRef.current.set(path, (editRevisionsRef.current.get(path) ?? 0) + 1);
-      editedFilesRef.current.set(path, file);
-      setDirtyPaths((prev) => (prev.has(path) ? prev : new Set(prev).add(path)));
-      // Publish remapped annotations synchronously so their placement moves
-      // with the edited content before paint. Bail on identical identity.
-      if (lineAnnotations && lineAnnotations !== editSession.annotations) {
-        flushSync(() => {
-          setEditSessions((prev) => {
-            const current = prev.get(path);
-            if (!current || current.annotations === lineAnnotations) return prev;
-            const next = new Map(prev);
-            next.set(path, {
-              ...current,
-              annotations: lineAnnotations as DiffAnnotation[],
-              rev: current.rev + 1,
-            });
-            return next;
-          });
+      if (actionPendingRef.current) return;
+      editedFilesRef.current.set(path, { ...file, contents: file.contents });
+      const dirty = file.contents !== editSession.original.newContents;
+      setDirtyPaths((prev) => {
+        const next = new Set(prev);
+        if (dirty) next.add(path);
+        else next.delete(path);
+        return next;
+      });
+      const oldContents = editSession.original.oldContents;
+      const diff = parseDiffFromFile(
+        oldContents === null ? null : { name: path, contents: oldContents },
+        file,
+      );
+      setLiveStats((prev) => new Map(prev).set(path, diff));
+      // Let the editor finish updating its diff model before React renders
+      // the new annotation positions and header counts.
+      setEditSessions((prev) => {
+        const current = prev.get(path);
+        if (!current || !lineAnnotations || current.annotations === lineAnnotations) return prev;
+        return new Map(prev).set(path, {
+          ...current,
+          annotations: lineAnnotations as DiffAnnotation[],
+          rev: current.rev + 1,
         });
-      }
+      });
     },
   );
 
-  // Drop edit sessions whose file left the diff (e.g. reverted externally).
+  // Refresh clean editors as disk changes arrive; never drop a dirty draft.
   useEffect(() => {
-    if (editSessions.size === 0) return;
-    const paths = new Set(parsedFiles.map((file) => file.path));
-    for (const path of editSessions.keys()) {
-      if (!paths.has(path)) stopEditing(path);
+    if (pendingAction || patch?.filter !== activeFilter) return;
+    for (const [path, edit] of editSessions) {
+      if (!dirtyPaths.has(path) && parsedFilesByPath.get(path)?.sectionHash !== edit.sectionHash)
+        stopEditing(path);
     }
-  }, [parsedFiles, editSessions, stopEditing]);
+    for (const file of parsedFiles) {
+      if (!editSessions.has(file.path)) void startEditing(file.path);
+    }
+  }, [
+    parsedFiles,
+    parsedFilesByPath,
+    editSessions,
+    dirtyPaths,
+    pendingAction,
+    patch?.filter,
+    activeFilter,
+    startEditing,
+    stopEditing,
+  ]);
 
   // Warn before browser navigation can discard live editor documents.
   const hasDirtyEdits = dirtyPaths.size > 0;
@@ -734,28 +808,9 @@ export function App() {
     return () => window.removeEventListener('beforeunload', preventUnload);
   }, [hasDirtyEdits]);
 
-  // Save every editing file on Cmd/Ctrl+S.
-  const hasEditSessions = editSessions.size > 0;
-  useEffect(() => {
-    if (!hasEditSessions) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (
-        !event.repeat &&
-        (event.metaKey || event.ctrlKey) &&
-        !event.altKey &&
-        !event.shiftKey &&
-        event.key.toLowerCase() === 's'
-      ) {
-        event.preventDefault();
-        void saveAllEdits();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [hasEditSessions, saveAllEdits]);
-
   // ── Comment actions ──────────────────────────────────────────────────
   const handleGutterClick = useStableCallback((range: SelectedLineRange, itemId: string) => {
+    if (dirtyPaths.has(itemId.slice(2))) return;
     setDraft({
       path: itemId.slice(2),
       side: range.endSide ?? range.side ?? 'additions',
@@ -794,7 +849,12 @@ export function App() {
       return next;
     });
     requestAnimationFrame(() => {
-      viewerRef.current?.scrollTo({ type: 'item', id: `f:${path}`, align: 'start' });
+      viewerRef.current?.scrollTo({
+        type: 'item',
+        id: `f:${path}`,
+        align: 'start',
+        offset: CODE_VIEW_LAYOUT.paddingTop,
+      });
     });
   });
 
@@ -842,11 +902,11 @@ export function App() {
       enableGutterUtility: true,
       lineHoverHighlight: 'number',
       hunkSeparators: 'line-info-basic',
-      itemMetrics: { lineHeight: view.lineHeight },
+      itemMetrics: { lineHeight: view.lineHeight, diffHeaderHeight: 40 },
       layout: CODE_VIEW_LAYOUT,
       unsafeCSS: CODE_VIEW_UNSAFE_CSS,
       onGutterUtilityClick(range, context) {
-        if (context.item.type === 'diff' && context.item.edit !== true) {
+        if (context.item.type === 'diff') {
           handleGutterClick(range, context.item.id);
         }
       },
@@ -896,19 +956,11 @@ export function App() {
 
   const renderCustomHeader = useStableCallback((item: CodeViewItem<AnnotationMeta>) => {
     const path = item.id.slice(2);
-    const summary = filesByPath.get(path);
     return (
       <FileHeader
         path={path}
-        summary={summary}
         collapsed={item.collapsed === true}
         onToggleCollapsed={toggleFileCollapsed}
-        editable={summary !== undefined && !summary.binary && summary.kind !== 'deleted'}
-        editing={editSessions.has(path)}
-        dirty={dirtyPaths.has(path)}
-        onStartEdit={(target) => void startEditing(target)}
-        onSaveEdit={(target) => void saveEditingFile(target)}
-        onDiscardEdit={discardEditing}
       />
     );
   });
@@ -948,6 +1000,10 @@ export function App() {
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((open) => !open)}
         connection={connection}
+        unsavedFiles={dirtyPaths.size}
+        pendingAction={pendingAction}
+        onCommit={() => void applyLocalEdits('commit')}
+        onDiscard={() => void applyLocalEdits('discard')}
       />
       <div className={`content ${narrowView ? 'narrow' : ''}`}>
         {narrowView && sidebarOpen && (
@@ -960,7 +1016,8 @@ export function App() {
         )}
         {sidebarOpen && (
           <Sidebar
-            files={patch.files}
+            files={displayedFiles}
+            dirtyPaths={dirtyPaths}
             comments={filterComments}
             totalLines={totalLines}
             onOpenFile={openFile}
@@ -969,6 +1026,7 @@ export function App() {
         )}
         <main
           className="diff-pane"
+          inert={pendingAction !== null}
           style={
             {
               '--viewer-font-family': view.fontFamily,
@@ -977,11 +1035,9 @@ export function App() {
             } as CSSProperties
           }
         >
-          {(editorLoadingCount > 0 || savingCount > 0) && (
-            <div className="save-status" role="status" aria-live="polite">
-              {editorLoadingCount > 0
-                ? 'Loading editor…'
-                : `Saving ${savingCount === 1 ? 'file' : `${savingCount} files`}…`}
+          {editorLoadingCount > 0 && (
+            <div className="save-status" role="status">
+              Loading editors…
             </div>
           )}
           {saveError !== null && (
@@ -998,20 +1054,21 @@ export function App() {
               diff.
             </div>
           ) : (
-            <EditProvider createEditor={createEditor}>
-              <CodeView<AnnotationMeta>
-                ref={viewerRef}
-                items={items}
-                className="code-view"
-                options={options}
-                editorOptions={EDITOR_OPTIONS}
-                selectedLines={selectedLines}
-                onSelectedLinesChange={handleSelectedLinesChange}
-                onItemEditChange={handleItemEditChange}
-                renderCustomHeader={renderCustomHeader}
-                renderAnnotation={renderAnnotation}
-              />
-            </EditProvider>
+            <FileHeadersContext.Provider value={fileHeaders}>
+              <EditProvider createEditor={createEditor}>
+                <CodeView<AnnotationMeta>
+                  ref={viewerRef}
+                  items={items}
+                  className="code-view"
+                  options={options}
+                  selectedLines={selectedLines}
+                  onSelectedLinesChange={handleSelectedLinesChange}
+                  onItemEditChange={handleItemEditChange}
+                  renderCustomHeader={renderCustomHeader}
+                  renderAnnotation={renderAnnotation}
+                />
+              </EditProvider>
+            </FileHeadersContext.Provider>
           )}
         </main>
       </div>
@@ -1026,27 +1083,16 @@ export function App() {
  */
 function FileHeader({
   path,
-  summary,
   collapsed,
   onToggleCollapsed,
-  editable,
-  editing,
-  dirty,
-  onStartEdit,
-  onSaveEdit,
-  onDiscardEdit,
 }: {
   path: string;
-  summary: PatchFileSummary | undefined;
   collapsed: boolean;
   onToggleCollapsed(path: string): void;
-  editable: boolean;
-  editing: boolean;
-  dirty: boolean;
-  onStartEdit(path: string): void;
-  onSaveEdit(path: string): void;
-  onDiscardEdit(path: string): void;
 }) {
+  const { files, dirtyPaths } = useContext(FileHeadersContext);
+  const summary = files.get(path);
+  const dirty = dirtyPaths.has(path);
   return (
     <div className="file-header">
       <button
@@ -1054,8 +1100,6 @@ function FileHeader({
         className="collapse-button"
         aria-expanded={!collapsed}
         aria-label={collapsed ? 'Expand diff' : 'Collapse diff'}
-        disabled={editing}
-        title={editing ? 'Finish editing to collapse' : undefined}
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -1075,6 +1119,14 @@ function FileHeader({
       <span className="file-path">
         {summary?.prevPath !== undefined ? `${summary.prevPath} → ${path}` : path}
       </span>
+      {dirty && (
+        <span
+          className="dirty-dot"
+          role="img"
+          aria-label="Unsaved changes"
+          title="Unsaved changes"
+        />
+      )}
       {summary &&
         (summary.binary ? (
           <span className="file-stats binary">binary</span>
@@ -1084,68 +1136,6 @@ function FileHeader({
             <span className="del">−{summary.deletions}</span>
           </span>
         ))}
-      {editing ? (
-        <span className="file-edit-actions">
-          {dirty ? (
-            <>
-              <span className="dirty-dot" title="Unsaved changes" />
-              <button
-                type="button"
-                className="edit-action save"
-                title={`Save changes (${SAVE_SHORTCUT_LABEL})`}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onSaveEdit(path);
-                }}
-              >
-                Save
-              </button>
-              <button
-                type="button"
-                className="edit-action"
-                title="Discard changes"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onDiscardEdit(path);
-                }}
-              >
-                Discard
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              className="edit-action"
-              title="Finish editing"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onDiscardEdit(path);
-              }}
-            >
-              Done
-            </button>
-          )}
-        </span>
-      ) : (
-        editable && (
-          <button
-            type="button"
-            className="edit-file-button"
-            aria-label="Edit file"
-            title="Edit file"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onStartEdit(path);
-            }}
-          >
-            <Pencil1Icon aria-hidden="true" />
-          </button>
-        )
-      )}
     </div>
   );
 }

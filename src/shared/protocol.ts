@@ -119,6 +119,12 @@ export interface SaveFileResponse {
   contentsHash: string;
 }
 
+/** Browser drafts to commit, or paths to restore to their committed contents. */
+export interface ApplyEditsRequest {
+  filter: DiffFilter;
+  files: Array<Omit<SaveFileRequest, 'filter'>>;
+}
+
 /** SSE `patch` event payload (`comments` events carry `{ comments: ReviewComment[] }`). */
 export interface PatchChangedEvent {
   filter: DiffFilter;

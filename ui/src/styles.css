@@ -887,57 +887,24 @@ body,
   color: var(--text-dim);
 }
 
-/* ── Edit mode header controls ────────────────────── */
-.collapse-button:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.collapse-button:disabled:hover {
-  color: var(--text-dim);
-  background: transparent;
-}
-
-.edit-file-button {
-  appearance: none;
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  transition:
-    color 0.12s ease,
-    background-color 0.12s ease;
-}
-
-.edit-file-button:hover {
-  color: var(--accent);
-  background: color-mix(in srgb, currentColor 10%, transparent);
-}
-
-.edit-file-button > svg {
-  width: 14px;
-  height: 14px;
-}
-
-.file-edit-actions {
+/* ── Local edits ───────────────────────────────────── */
+.edit-actions {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: none;
 }
 
-.file-edit-actions .dirty-dot {
+.dirty-dot {
   width: 7px;
   height: 7px;
+  flex: none;
   border-radius: 50%;
-  background: var(--status-modified);
+  background: #e9b949;
+}
+
+.edit-action:disabled {
+  opacity: 0.5;
+  cursor: wait;
 }
 
 .edit-action {
@@ -958,13 +925,13 @@ body,
   border-color: color-mix(in srgb, var(--text) 30%, transparent);
 }
 
-.edit-action.save {
+.edit-action.commit {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
 }
 
-.edit-action.save:hover {
+.edit-action.commit:hover {
   filter: brightness(1.08);
 }
 
@@ -973,42 +940,34 @@ body,
   margin: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface);
+  background: var(--bg);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 6%);
+  font-family: var(--font-interface);
   font-size: 13px;
   max-width: 720px;
 }
 
-.comment-card.draft {
-  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+/* Diff editors hide native selections; comments use normal browser selection. */
+.comment-card ::selection {
+  background-color: Highlight;
+  color: HighlightText;
 }
 
 .comment-row + .comment-row {
   border-top: 1px solid var(--border);
 }
 
-.comment-row,
-.comment-card.draft {
-  padding: 8px 10px;
-}
-
-.comment-meta {
+.comment-read {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-dim);
-  font-size: 11px;
-  margin-bottom: 4px;
-}
-
-.comment-side {
-  font-family: var(--font-code);
-  font-weight: 700;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 10px 8px 12px;
 }
 
 .comment-actions {
-  margin-left: auto;
   display: flex;
-  gap: 6px;
+  flex: none;
+  gap: 2px;
 }
 
 .comment-action-button {
@@ -1041,27 +1000,41 @@ body,
 }
 
 .comment-body {
+  flex: 1;
+  min-width: 0;
+  padding-block: 2px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   line-height: 1.45;
 }
 
 .comment-editor textarea {
+  display: block;
   width: 100%;
-  resize: vertical;
-  background: var(--bg);
+  resize: none;
+  background: transparent;
   color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 8px;
+  caret-color: var(--text);
+  border: none;
+  padding: 12px;
   font: inherit;
   font-size: 13px;
+  line-height: 1.5;
+}
+
+.comment-editor textarea:focus {
+  outline: none;
+}
+
+.comment-card:focus-within {
+  border-color: color-mix(in srgb, var(--text) 40%, var(--bg));
 }
 
 .comment-editor-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 6px;
+  padding: 8px 10px 10px;
 }
 
 .comment-editor-actions button {
@@ -1086,6 +1059,7 @@ body,
 }
 
 .comment-error {
+  padding-inline: 12px;
   color: var(--danger);
   font-size: 12px;
   margin-top: 4px;

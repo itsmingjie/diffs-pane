@@ -39,6 +39,10 @@ export interface ToolbarProps {
   sidebarOpen: boolean;
   onToggleSidebar(): void;
   connection: 'connected' | 'connecting' | 'reconnecting' | 'ended';
+  unsavedFiles: number;
+  pendingAction: 'commit' | 'discard' | null;
+  onCommit(): void;
+  onDiscard(): void;
 }
 
 export function Toolbar({
@@ -51,6 +55,10 @@ export function Toolbar({
   sidebarOpen,
   onToggleSidebar,
   connection,
+  unsavedFiles,
+  pendingAction,
+  onCommit,
+  onDiscard,
 }: ToolbarProps) {
   const repoName = session.root.replace(/\/+$/, '').split('/').pop() || session.root;
 
@@ -75,6 +83,7 @@ export function Toolbar({
         <span className="sr-only">Diff source</span>
         <select
           value={filter}
+          disabled={pendingAction !== null}
           onChange={(event) => onFilterChange(event.target.value as DiffFilter)}
         >
           <option value="turn" disabled={session.turn === null}>
@@ -96,6 +105,28 @@ export function Toolbar({
           </span>
         )}
         <DisplayOptions view={view} onViewChange={onViewChange} unifiedOnly={unifiedOnly} />
+        {unsavedFiles > 0 && (
+          <div className="edit-actions">
+            <button
+              type="button"
+              className="edit-action"
+              disabled={pendingAction !== null}
+              onClick={onDiscard}
+            >
+              {pendingAction === 'discard' ? 'Discarding…' : 'Discard'}
+            </button>
+            <button
+              type="button"
+              className="edit-action commit"
+              title="Commit local edits (⌘S / Ctrl+S)"
+              aria-keyshortcuts="Meta+S Control+S"
+              disabled={pendingAction !== null}
+              onClick={onCommit}
+            >
+              {pendingAction === 'commit' ? 'Committing…' : 'Commit'}
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );

@@ -1,12 +1,11 @@
 import type {
+  ApplyEditsRequest,
   DiffFilter,
   FileContentsPayload,
   NewCommentRequest,
   PatchChangedEvent,
   PatchPayload,
   ReviewComment,
-  SaveFileRequest,
-  SaveFileResponse,
   SessionInfo,
 } from '../../src/shared/protocol';
 
@@ -45,10 +44,12 @@ export function fetchFileContents(filter: DiffFilter, path: string): Promise<Fil
   return json<FileContentsPayload>(`api/file?filter=${filter}&path=${encodeURIComponent(path)}`);
 }
 
-/** Write edited contents back to the work-tree file. */
-export function saveFile(request: SaveFileRequest): Promise<SaveFileResponse> {
-  return json<SaveFileResponse>('api/file', {
-    method: 'PUT',
+export function applyEdits(
+  action: 'commit' | 'discard',
+  request: ApplyEditsRequest,
+): Promise<{ ok: true; warning?: string }> {
+  return json(`api/edits/${action}`, {
+    method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(request),
   });

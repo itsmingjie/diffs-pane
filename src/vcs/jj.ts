@@ -79,6 +79,20 @@ export class JjBackend implements VcsBackend {
     return { ref, capturedAt: new Date().toISOString() };
   }
 
+  async discardFiles(paths: string[]): Promise<void> {
+    await this.jj(['restore', '--from', '@-', '--', ...paths.map((path) => `root-file:${path}`)]);
+  }
+
+  async commitFiles(paths: string[]): Promise<void> {
+    await this.jj([
+      'commit',
+      '-m',
+      'dp: apply local edits',
+      '--',
+      ...paths.map((path) => `root-file:${path}`),
+    ]);
+  }
+
   async computePatch(filter: DiffFilter, options: ComputeOptions): Promise<string> {
     const { signal } = options;
     switch (filter) {
