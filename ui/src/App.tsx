@@ -2,8 +2,10 @@ import {
   type CodeViewItem,
   type CodeViewLineSelection,
   type CodeViewOptions,
+  type DiffLineEventBaseProps,
   type SelectedLineRange,
 } from '@pierre/diffs';
+import type { Editor } from '@pierre/diffs/edit';
 import {
   CodeView,
   EditProvider,
@@ -26,6 +28,7 @@ import {
   type AnnotationMeta,
   type DraftComment,
 } from './annotations';
+import { characterAtPoint } from './caretFromPoint';
 import { CommentCard } from './components/CommentCard';
 import { FileHeader, FileHeadersProvider } from './components/FileHeader';
 import { Sidebar } from './components/Sidebar';
@@ -40,9 +43,15 @@ type Connection = 'connected' | 'connecting' | 'reconnecting' | 'ended';
 
 const NARROW_VIEW_QUERY = '(max-width: 767px)';
 const CODE_VIEW_LAYOUT = { paddingTop: 0, gap: 1, paddingBottom: 16 };
+// How long to wait for a lazily activated editor to attach and hydrate
+// before dropping the pending caret placement.
+const EDIT_FOCUS_TIMEOUT_MS = 10_000;
 const CODE_VIEW_UNSAFE_CSS = `
   [data-diffs-header][data-sticky] {
     top: 0;
+  }
+  [data-interactive-lines] [data-line] {
+    cursor: text;
   }
 `;
 
@@ -245,6 +254,54 @@ export function App() {
     () => new Map(displayedFiles.map((file) => [file.path, file])),
     [displayedFiles],
   );
+
+  // Files enter edit mode lazily (on first click into their code), so
+  // scrolling never attaches editors or hydrates full file contents. The
+  // clicked file's editor attaches asynchronously; poll until its document
+  // is ready, then place the caret near the clicked line.
+  const editFocusFrameRef = useRef<number | null>(null);
+  const cancelEditFocus = useCallback(() => {
+    if (editFocusFrameRef.current !== null) {
+      cancelAnimationFrame(editFocusFrameRef.current);
+      editFocusFrameRef.current = null;
+    }
+  }, []);
+  useEffect(() => cancelEditFocus, [cancelEditFocus]);
+  const focusEditorWhenReady = useStableCallback(
+    (itemId: string, lineNumber: number, character: number) => {
+      cancelEditFocus();
+      const deadline = Date.now() + EDIT_FOCUS_TIMEOUT_MS;
+      const tick = () => {
+        editFocusFrameRef.current = null;
+        const editor = viewerRef.current?.getEditor(itemId) as Editor<AnnotationMeta> | undefined;
+        if (editor?.getFile() !== undefined) {
+          editor.focus({ lineNumber, character, preventScroll: true });
+          return;
+        }
+        if (Date.now() < deadline) editFocusFrameRef.current = requestAnimationFrame(tick);
+      };
+      tick();
+    },
+  );
+  const handleLineClick = useStableCallback(
+    (line: DiffLineEventBaseProps & { event: PointerEvent }, itemId: string) => {
+      // Number-column clicks drive line selection for comments, not editing.
+      if (line.numberColumn) return;
+      const path = itemId.slice(2);
+      if (edits.pendingAction !== null || edits.editingPaths.has(path)) return;
+      const summary = filesByPath.get(path);
+      if (!summary || summary.binary || summary.kind === 'deleted') return;
+      // Don't hijack an in-progress text selection (copying from the diff).
+      const selection = window.getSelection();
+      if (selection !== null && !selection.isCollapsed) return;
+      edits.startEditing(path);
+      focusEditorWhenReady(
+        itemId,
+        line.lineNumber,
+        characterAtPoint(line.lineElement, line.event.clientX, line.event.clientY),
+      );
+    },
+  );
   const fileHeaderState = useMemo(
     () => ({ files: filesByPath, dirtyPaths: edits.dirtyPaths }),
     [filesByPath, edits.dirtyPaths],
@@ -271,6 +328,7 @@ export function App() {
         const summary = filesByPath.get(path);
         const editable =
           edits.editorReady &&
+          (edits.editingPaths.has(path) || edit !== undefined) &&
           summary !== undefined &&
           !summary.binary &&
           summary.kind !== 'deleted';
@@ -293,6 +351,7 @@ export function App() {
     [
       displayedParsedFiles,
       edits.edits,
+      edits.editingPaths,
       edits.editorReady,
       annotationsByPath,
       collapsedPaths,
@@ -483,6 +542,9 @@ export function App() {
       onGutterUtilityClick(range, context) {
         if (context.item.type === 'diff') handleGutterClick(range, context.item.id);
       },
+      onLineClick(line, context) {
+        if (context.item.type === 'diff') handleLineClick(line, context.item.id);
+      },
       loadDiffFiles: edits.loadDiffFiles,
     }),
     [
@@ -491,6 +553,7 @@ export function App() {
       view.theme,
       view.lineHeight,
       handleGutterClick,
+      handleLineClick,
       edits.loadDiffFiles,
     ],
   );

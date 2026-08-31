@@ -89,6 +89,7 @@ export function useEdits({
   onEditStart,
 }: UseEditsOptions) {
   const [edits, setEdits] = useState<ReadonlyMap<string, LocalEdit>>(new Map());
+  const [editingPaths, setEditingPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [pendingAction, setPendingAction] = useState<'commit' | 'discard' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingCount, setLoadingCount] = useState(0);
@@ -107,12 +108,10 @@ export function useEdits({
     () => new Map(parsedFiles.map((file) => [file.path, file])),
     [parsedFiles],
   );
-  const hasEditableFiles = (patch?.files ?? []).some(
-    (file) => !file.binary && file.kind !== 'deleted',
-  );
-
+  // Load the editor module lazily, once the first file enters edit mode.
+  const wantsEditor = editingPaths.size > 0;
   useEffect(() => {
-    if (!hasEditableFiles || editorReady) return;
+    if (!wantsEditor || editorReady) return;
     // The effect owns the loading state for this import.
     // oxlint-disable-next-line react/set-state-in-effect
     setLoadingCount((count) => count + 1);
@@ -124,13 +123,24 @@ export function useEdits({
         );
       })
       .finally(() => setLoadingCount((count) => Math.max(0, count - 1)));
-  }, [editorReady, hasEditableFiles]);
+  }, [editorReady, wantsEditor]);
+
+  const startEditing = useStableCallback((path: string) => {
+    if (actionPendingRef.current) return;
+    setEditingPaths((previous) => {
+      if (previous.has(path)) return previous;
+      const next = new Set(previous);
+      next.add(path);
+      return next;
+    });
+  });
 
   const reset = useStableCallback(() => {
     editsRef.current.clear();
     requestsRef.current = new WeakMap();
     payloadsRef.current = new WeakMap();
     setEdits(new Map());
+    setEditingPaths(new Set());
     setError(null);
   });
 
@@ -285,12 +295,14 @@ export function useEdits({
       if (files.length === 0) {
         editsRef.current.clear();
         setEdits(new Map());
+        setEditingPaths(new Set());
         return;
       }
       const result = await api.applyEdits(action, { filter: activeFilter, files });
       prepareForRefresh();
       editsRef.current.clear();
       setEdits(new Map());
+      setEditingPaths(new Set());
       requestsRef.current = new WeakMap();
       payloadsRef.current = new WeakMap();
       await loadPatch(activeFilter);
@@ -318,6 +330,8 @@ export function useEdits({
 
   return {
     edits,
+    editingPaths,
+    startEditing,
     dirtyPaths,
     reset,
     pendingAction,
