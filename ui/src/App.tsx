@@ -28,6 +28,7 @@ import {
   type AnnotationMeta,
   type DraftComment,
 } from './annotations';
+import { characterAtPoint } from './caretFromPoint';
 import { CommentCard } from './components/CommentCard';
 import { FileHeader, FileHeadersProvider } from './components/FileHeader';
 import { Sidebar } from './components/Sidebar';
@@ -266,33 +267,41 @@ export function App() {
     }
   }, []);
   useEffect(() => cancelEditFocus, [cancelEditFocus]);
-  const focusEditorWhenReady = useStableCallback((itemId: string, lineNumber: number) => {
-    cancelEditFocus();
-    const deadline = Date.now() + EDIT_FOCUS_TIMEOUT_MS;
-    const tick = () => {
-      editFocusFrameRef.current = null;
-      const editor = viewerRef.current?.getEditor(itemId) as Editor<AnnotationMeta> | undefined;
-      if (editor?.getFile() !== undefined) {
-        editor.focus({ lineNumber, preventScroll: true });
-        return;
-      }
-      if (Date.now() < deadline) editFocusFrameRef.current = requestAnimationFrame(tick);
-    };
-    tick();
-  });
-  const handleLineClick = useStableCallback((line: DiffLineEventBaseProps, itemId: string) => {
-    // Number-column clicks drive line selection for comments, not editing.
-    if (line.numberColumn) return;
-    const path = itemId.slice(2);
-    if (edits.pendingAction !== null || edits.editingPaths.has(path)) return;
-    const summary = filesByPath.get(path);
-    if (!summary || summary.binary || summary.kind === 'deleted') return;
-    // Don't hijack an in-progress text selection (copying from the diff).
-    const selection = window.getSelection();
-    if (selection !== null && !selection.isCollapsed) return;
-    edits.startEditing(path);
-    focusEditorWhenReady(itemId, line.lineNumber);
-  });
+  const focusEditorWhenReady = useStableCallback(
+    (itemId: string, lineNumber: number, character: number) => {
+      cancelEditFocus();
+      const deadline = Date.now() + EDIT_FOCUS_TIMEOUT_MS;
+      const tick = () => {
+        editFocusFrameRef.current = null;
+        const editor = viewerRef.current?.getEditor(itemId) as Editor<AnnotationMeta> | undefined;
+        if (editor?.getFile() !== undefined) {
+          editor.focus({ lineNumber, character, preventScroll: true });
+          return;
+        }
+        if (Date.now() < deadline) editFocusFrameRef.current = requestAnimationFrame(tick);
+      };
+      tick();
+    },
+  );
+  const handleLineClick = useStableCallback(
+    (line: DiffLineEventBaseProps & { event: PointerEvent }, itemId: string) => {
+      // Number-column clicks drive line selection for comments, not editing.
+      if (line.numberColumn) return;
+      const path = itemId.slice(2);
+      if (edits.pendingAction !== null || edits.editingPaths.has(path)) return;
+      const summary = filesByPath.get(path);
+      if (!summary || summary.binary || summary.kind === 'deleted') return;
+      // Don't hijack an in-progress text selection (copying from the diff).
+      const selection = window.getSelection();
+      if (selection !== null && !selection.isCollapsed) return;
+      edits.startEditing(path);
+      focusEditorWhenReady(
+        itemId,
+        line.lineNumber,
+        characterAtPoint(line.lineElement, line.event.clientX, line.event.clientY),
+      );
+    },
+  );
   const fileHeaderState = useMemo(
     () => ({ files: filesByPath, dirtyPaths: edits.dirtyPaths }),
     [filesByPath, edits.dirtyPaths],
