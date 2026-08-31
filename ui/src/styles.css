@@ -13,7 +13,11 @@
   --text: #a3a3a3;
   --text-dim: #878787;
   --surface: color-mix(in srgb, var(--text) 7%, var(--bg-raised));
-  --border: color-mix(in srgb, color-mix(in srgb, var(--text) 22%, var(--bg-raised)) 50%, transparent);
+  --border: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--text) 22%, var(--bg-raised)) 50%,
+    transparent
+  );
   --accent: #009fff;
   --danger: #ff2e3f;
   --warning: #ffca00;
@@ -40,7 +44,11 @@
   --text: #525252;
   --text-dim: #626262;
   --surface: color-mix(in srgb, var(--text) 7%, var(--bg-raised));
-  --border: color-mix(in srgb, color-mix(in srgb, var(--text) 22%, var(--bg-raised)) 50%, transparent);
+  --border: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--text) 22%, var(--bg-raised)) 50%,
+    transparent
+  );
   --accent: #009fff;
   --danger: #d52c36;
   --warning: #d5a910;
@@ -64,7 +72,11 @@
     --text: #525252;
     --text-dim: #626262;
     --surface: color-mix(in srgb, var(--text) 7%, var(--bg-raised));
-    --border: color-mix(in srgb, color-mix(in srgb, var(--text) 22%, var(--bg-raised)) 50%, transparent);
+    --border: color-mix(
+      in srgb,
+      color-mix(in srgb, var(--text) 22%, var(--bg-raised)) 50%,
+      transparent
+    );
     --accent: #009fff;
     --danger: #d52c36;
     --warning: #d5a910;
