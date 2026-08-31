@@ -161,6 +161,26 @@ export class Session {
     return this.reviews.list();
   }
 
+  private editOperation: Promise<void> = Promise.resolve();
+
+  /** Serialize work-tree mutations from browser edit actions. */
+  runEdit<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.editOperation.then(operation);
+    this.editOperation = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result.finally(() => this.handleFsChange());
+  }
+
+  commitFiles(paths: string[]): Promise<void> {
+    return this.backend.commitFiles(paths);
+  }
+
+  discardFiles(paths: string[]): Promise<void> {
+    return this.backend.discardFiles(paths);
+  }
+
   // ── Patch computation ────────────────────────────────────────────────
 
   /** Serve the patch for a filter, recomputing only when stale. */
@@ -241,7 +261,17 @@ export class Session {
         filter,
         patchHash: sha256(patch),
         patch,
-        files: summarizeFiles(parsedFiles),
+        // Per-file hashes let the UI reuse parsed and rendered state for
+        // files whose section did not change in a refresh.
+        files: summarizeFiles(parsedFiles).map((summary, index) => ({
+          path: summary.path,
+          prevPath: summary.prevPath,
+          kind: summary.kind,
+          additions: summary.additions,
+          deletions: summary.deletions,
+          binary: summary.binary,
+          sectionHash: sha256(parsedFiles[index]!.raw).slice(0, 32),
+        })),
         error: null,
         generatedAt,
       };

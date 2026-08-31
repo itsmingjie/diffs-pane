@@ -1,14 +1,12 @@
-import { ChevronDownIcon } from '@radix-ui/react-icons';
 import {
-  parsePatchFiles,
   type CodeViewItem,
   type CodeViewLineSelection,
   type CodeViewOptions,
-  type FileDiffMetadata,
   type SelectedLineRange,
 } from '@pierre/diffs';
 import {
   CodeView,
+  EditProvider,
   useStableCallback,
   useWorkerPool,
   type CodeViewHandle,
@@ -17,7 +15,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 
 import type {
   DiffFilter,
-  PatchFileSummary,
   PatchPayload,
   ReviewComment,
   SessionInfo,
@@ -30,10 +27,14 @@ import {
   type DraftComment,
 } from './annotations';
 import { CommentCard } from './components/CommentCard';
+import { FileHeader, FileHeadersProvider } from './components/FileHeader';
 import { Sidebar } from './components/Sidebar';
 import { Toolbar, type ViewSettings } from './components/Toolbar';
 import { parseLineHash, syncLineHash } from './lineHash';
 import { codeViewTheme, fontSettingsFromSearch, syncTheme, themeFromSearch } from './themes';
+import { createEditor, useEdits } from './useEdits';
+import { usePatchModel } from './usePatchModel';
+import { useScrollAnchor } from './useScrollAnchor';
 
 type Connection = 'connected' | 'connecting' | 'reconnecting' | 'ended';
 
@@ -52,18 +53,6 @@ const CODE_VIEW_UNSAFE_CSS = `
     pointer-events: none;
   }
 `;
-
-const KIND_BADGE: Record<PatchFileSummary['kind'], string> = {
-  added: 'A',
-  modified: 'M',
-  deleted: 'D',
-  renamed: 'R',
-};
-
-interface ParsedFile {
-  path: string;
-  fileDiff: FileDiffMetadata;
-}
 
 export function App() {
   const workerPool = useWorkerPool();
@@ -89,6 +78,7 @@ export function App() {
 
   const viewerRef = useRef<CodeViewHandle<AnnotationMeta> | null>(null);
   const patchHashRef = useRef<string | null>(null);
+  const prepareForRefreshRef = useRef<() => void>(() => {});
   const pendingHashTargetRef = useRef<CodeViewLineSelection | null>(
     parseLineHash(window.location.hash),
   );
@@ -96,7 +86,6 @@ export function App() {
   const effectiveDiffStyle = narrowView ? 'unified' : view.diffStyle;
 
   useEffect(() => syncTheme(view.theme), [view.theme]);
-
   useEffect(() => {
     void workerPool?.setRenderOptions({ theme: codeViewTheme(view.theme) });
   }, [view.theme, workerPool]);
@@ -122,19 +111,18 @@ export function App() {
     return () => document.removeEventListener('keydown', closeOnEscape);
   }, [narrowView, sidebarOpen]);
 
-  // ── Initial load ─────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      try {
-        const info = await api.fetchSession();
+    void api
+      .fetchSession()
+      .then((info) => {
         if (cancelled) return;
         setSession(info);
         setFilter((current) => current ?? info.defaultFilter);
-      } catch (error) {
+      })
+      .catch((error: unknown) => {
         if (!cancelled) setLoadError(error instanceof Error ? error.message : String(error));
-      }
-    })();
+      });
     return () => {
       cancelled = true;
     };
@@ -146,18 +134,19 @@ export function App() {
       patchHashRef.current = payload.patchHash;
       setPatch(payload);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      patchHashRef.current = 'load-error';
       setPatch({
         filter: target,
         patchHash: 'load-error',
         patch: '',
         files: [],
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
         generatedAt: new Date().toISOString(),
       });
     }
   }, []);
 
-  // ── Live events (per viewed filter) ──────────────────────────────────
   const sessionReady = session !== null;
   useEffect(() => {
     if (!sessionReady || filter === null) return;
@@ -166,13 +155,10 @@ export function App() {
     patchHashRef.current = null;
     void loadPatch(filter);
 
-    const close = api.openEvents(filter, {
+    return api.openEvents(filter, {
       onOpen: () => {
         setConnection('connected');
-        if (opened) {
-          // Reconnected: catch up on anything missed while offline.
-          void loadPatch(filter);
-        }
+        if (opened) void loadPatch(filter);
         opened = true;
       },
       onDisconnect: () => setConnection('reconnecting'),
@@ -185,71 +171,153 @@ export function App() {
         }
       },
     });
-    return close;
   }, [sessionReady, filter, loadPatch]);
 
-  // Drafts and selections don't carry across diff sources.
   useEffect(() => {
     setDraft(null);
     setSelectedLines(null);
   }, [activeFilter]);
 
-  // ── Parse the patch with @pierre/diffs ───────────────────────────────
-  const parsedFiles = useMemo<ParsedFile[]>(() => {
-    if (!patch || patch.patch === '') return [];
-    const parsed = parsePatchFiles(patch.patch, patch.patchHash.slice(0, 16));
-    const fileDiffs = parsed.flatMap((p) => p.files);
-    // Server summaries and parsed files come from the same patch in the same
-    // order; pair them so path identifiers match the sidebar exactly.
-    return fileDiffs.map((fileDiff, index) => ({
-      path: patch.files[index]?.path ?? fileDiff.name,
-      fileDiff,
-    }));
-  }, [patch]);
-
-  const filesByPath = useMemo(
-    () => new Map((patch?.files ?? []).map((f) => [f.path, f])),
-    [patch?.files],
-  );
-  const totalLines = useMemo(
-    () => parsedFiles.reduce((sum, file) => sum + file.fileDiff.unifiedLineCount, 0),
-    [parsedFiles],
-  );
-
+  const { files: parsedFiles, clearCache: clearParsedFileCache } = usePatchModel(patch);
   const filterComments = useMemo(
-    () => comments.filter((c) => c.filter === activeFilter),
+    () => comments.filter((comment) => comment.filter === activeFilter),
     [comments, activeFilter],
   );
-
-  // ── CodeView items with minimal version churn ────────────────────────
   const annotationsByPath = useMemo(
     () => buildAnnotations(filterComments, draft),
     [filterComments, draft],
   );
+  const handleEditStart = useStableCallback((path: string) => {
+    setDraft((current) => (current?.path === path ? null : current));
+    setSelectedLines((current) => {
+      if (current?.id !== `f:${path}`) return current;
+      viewerRef.current?.clearSelectedLines();
+      syncLineHash(null);
+      return null;
+    });
+  });
+  const edits = useEdits({
+    activeFilter,
+    patch,
+    parsedFiles,
+    annotationsByPath,
+    loadPatch,
+    prepareForRefresh: () => prepareForRefreshRef.current(),
+    onEditStart: handleEditStart,
+  });
+  const applyLocalEdits = edits.applyLocalEdits;
+
+  const patchFilesByPath = useMemo(
+    () => new Map((patch?.files ?? []).map((file) => [file.path, file])),
+    [patch?.files],
+  );
+  const parsedFilesByPath = useMemo(
+    () => new Map(parsedFiles.map((file) => [file.path, file])),
+    [parsedFiles],
+  );
+  const displayedPaths = useMemo(() => {
+    const paths = (patch?.files ?? []).map((file) => file.path);
+    const known = new Set(paths);
+    for (const path of edits.edits.keys()) {
+      if (!known.has(path)) paths.push(path);
+    }
+    return paths;
+  }, [patch?.files, edits.edits]);
+  const displayedFiles = useMemo(
+    () =>
+      displayedPaths.flatMap((path) => {
+        const edit = edits.edits.get(path);
+        const summary = patchFilesByPath.get(path) ?? edit?.summary;
+        if (!summary) return [];
+        if (!edit) return [summary];
+        return [
+          {
+            ...summary,
+            additions: edit.liveDiff.hunks.reduce((sum, hunk) => sum + hunk.additionLines, 0),
+            deletions: edit.liveDiff.hunks.reduce((sum, hunk) => sum + hunk.deletionLines, 0),
+          },
+        ];
+      }),
+    [displayedPaths, edits.edits, patchFilesByPath],
+  );
+  const displayedParsedFiles = useMemo(
+    () =>
+      displayedPaths.flatMap((path) => {
+        const edit = edits.edits.get(path);
+        const parsed = parsedFilesByPath.get(path);
+        if (edit) {
+          return [{ path, fileDiff: edit.fileDiff, sectionHash: edit.sectionHash }];
+        }
+        return parsed ? [parsed] : [];
+      }),
+    [displayedPaths, edits.edits, parsedFilesByPath],
+  );
+  const filesByPath = useMemo(
+    () => new Map(displayedFiles.map((file) => [file.path, file])),
+    [displayedFiles],
+  );
+  const fileHeaderState = useMemo(
+    () => ({ files: filesByPath, dirtyPaths: edits.dirtyPaths }),
+    [filesByPath, edits.dirtyPaths],
+  );
+  const totalLines = useMemo(
+    () =>
+      displayedParsedFiles.reduce(
+        (sum, file) =>
+          sum + (edits.edits.get(file.path)?.liveDiff ?? file.fileDiff).unifiedLineCount,
+        0,
+      ),
+    [displayedParsedFiles, edits.edits],
+  );
 
   const versionsRef = useRef(new Map<string, { version: number; key: string }>());
-  const items = useMemo<CodeViewItem<AnnotationMeta>[]>(() => {
-    const hash = patch?.patchHash ?? '';
-    return parsedFiles.map(({ path, fileDiff }) => {
-      const id = `f:${path}`;
-      const annotations = annotationsByPath.get(path) ?? [];
-      const collapsed = collapsedPaths.has(path);
-      const key = `${hash}|${collapsed ? 1 : 0}|${annotationsKey(annotations)}`;
-      const entry = versionsRef.current.get(id);
-      let version = entry?.version ?? 1;
-      if (!entry || entry.key !== key) {
-        version = (entry?.version ?? 0) + 1;
-        versionsRef.current.set(id, { version, key });
-      }
-      return { id, type: 'diff', fileDiff, annotations, collapsed, version };
-    });
-  }, [parsedFiles, annotationsByPath, collapsedPaths, patch?.patchHash]);
+  const items = useMemo<CodeViewItem<AnnotationMeta>[]>(
+    () =>
+      displayedParsedFiles.map(({ path, fileDiff, sectionHash }) => {
+        const edit = edits.edits.get(path);
+        const annotations = edit?.annotations ?? annotationsByPath.get(path) ?? [];
+        const collapsed = collapsedPaths.has(path);
+        const summary = filesByPath.get(path);
+        const editable =
+          edits.editorReady &&
+          summary !== undefined &&
+          !summary.binary &&
+          summary.kind !== 'deleted';
+        // The version must change whenever any rendered input (including the
+        // edit flag) changes, so CodeView re-reads the item.
+        const key = `${sectionHash}|${collapsed ? 1 : 0}|${editable ? 1 : 0}|${annotationsKey(annotations)}`;
+        const previous = versionsRef.current.get(path);
+        const version = previous?.key === key ? previous.version : (previous?.version ?? 0) + 1;
+        versionsRef.current.set(path, { version, key });
+        return {
+          id: `f:${path}`,
+          type: 'diff',
+          fileDiff,
+          annotations,
+          collapsed,
+          version,
+          edit: editable,
+        };
+      }),
+    [
+      displayedParsedFiles,
+      edits.edits,
+      edits.editorReady,
+      annotationsByPath,
+      collapsedPaths,
+      filesByPath,
+    ],
+  );
 
-  // Restore a line permalink once its target file is in the rendered patch.
+  const captureScrollAnchor = useScrollAnchor(viewerRef, items, patch?.patchHash ?? '');
+  prepareForRefreshRef.current = () => {
+    captureScrollAnchor(true);
+    clearParsedFileCache();
+  };
+
   useEffect(() => {
     const target = pendingHashTargetRef.current;
-    if (!target || items.length === 0) return;
-    if (!items.some((item) => item.id === target.id)) return;
+    if (!target || !items.some((item) => item.id === target.id)) return;
     pendingHashTargetRef.current = null;
     setSelectedLines(target);
     viewerRef.current?.scrollTo({
@@ -260,33 +328,69 @@ export function App() {
     });
   }, [items]);
 
-  // ── Selection & permalinks ───────────────────────────────────────────
   const handleSelectedLinesChange = useStableCallback((selection: CodeViewLineSelection | null) => {
+    if (selection && edits.dirtyPaths.has(selection.id.slice(2))) {
+      viewerRef.current?.clearSelectedLines();
+      return;
+    }
     setSelectedLines(selection);
     syncLineHash(selection);
   });
 
-  // ── Collapse ─────────────────────────────────────────────────────────
   const toggleFileCollapsed = useStableCallback((path: string) => {
-    const viewer = viewerRef.current;
-    const instance = viewer?.getInstance();
+    const instance = viewerRef.current?.getInstance();
     const itemTop = instance?.getTopForItem(`f:${path}`);
     const scrollTop = instance?.getScrollTop();
-    setCollapsedPaths((prev) => {
-      const next = new Set(prev);
+    setCollapsedPaths((previous) => {
+      const next = new Set(previous);
       if (!next.delete(path)) next.add(path);
       return next;
     });
-    // Keep a file collapsed above the viewport anchored in view.
     if (itemTop !== undefined && scrollTop !== undefined && itemTop < scrollTop) {
       requestAnimationFrame(() => {
-        viewerRef.current?.scrollTo({ type: 'item', id: `f:${path}`, align: 'start' });
+        viewerRef.current?.scrollTo({
+          type: 'item',
+          id: `f:${path}`,
+          align: 'start',
+          offset: CODE_VIEW_LAYOUT.paddingTop,
+        });
       });
     }
   });
 
-  // ── Comment actions ──────────────────────────────────────────────────
+  const changeFilter = useStableCallback((next: DiffFilter) => {
+    if (edits.pendingAction) return;
+    if (
+      next !== activeFilter &&
+      edits.dirtyPaths.size > 0 &&
+      !window.confirm('Discard unsaved file changes and switch diff source?')
+    ) {
+      return;
+    }
+    setFilter(next);
+  });
+
+  useEffect(() => {
+    const handleSave = (event: KeyboardEvent) => {
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        event.altKey ||
+        event.shiftKey ||
+        event.key.toLowerCase() !== 's' ||
+        // Comment forms are the only textareas; the diff editor is contenteditable.
+        event.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+      event.preventDefault();
+      if (!event.repeat) void applyLocalEdits('commit');
+    };
+    window.addEventListener('keydown', handleSave);
+    return () => window.removeEventListener('keydown', handleSave);
+  }, [applyLocalEdits]);
+
   const handleGutterClick = useStableCallback((range: SelectedLineRange, itemId: string) => {
+    if (edits.dirtyPaths.has(itemId.slice(2))) return;
     setDraft({
       path: itemId.slice(2),
       side: range.endSide ?? range.side ?? 'additions',
@@ -306,26 +410,28 @@ export function App() {
     });
     setDraft(null);
   });
-
   const updateComment = useStableCallback(async (id: string, body: string) => {
     await api.updateComment(id, body);
   });
-
   const removeComment = useStableCallback(async (id: string) => {
     await api.deleteComment(id);
   });
 
   const openFile = useStableCallback((path: string) => {
     if (narrowView) setSidebarOpen(false);
-    // Expand a collapsed file before navigating to it.
-    setCollapsedPaths((prev) => {
-      if (!prev.has(path)) return prev;
-      const next = new Set(prev);
+    setCollapsedPaths((previous) => {
+      if (!previous.has(path)) return previous;
+      const next = new Set(previous);
       next.delete(path);
       return next;
     });
     requestAnimationFrame(() => {
-      viewerRef.current?.scrollTo({ type: 'item', id: `f:${path}`, align: 'start' });
+      viewerRef.current?.scrollTo({
+        type: 'item',
+        id: `f:${path}`,
+        align: 'start',
+        offset: CODE_VIEW_LAYOUT.paddingTop,
+      });
     });
   });
 
@@ -336,17 +442,18 @@ export function App() {
       return;
     }
     const id = `f:${comment.path}`;
-    const range: SelectedLineRange = {
-      start: comment.startLine,
-      side: comment.side,
-      end: comment.endLine,
-      endSide: comment.side,
-    };
-    handleSelectedLinesChange({ id, range });
-    // Expand the file first when collapsed, then navigate on the next frame.
-    setCollapsedPaths((prev) => {
-      if (!prev.has(comment.path)) return prev;
-      const next = new Set(prev);
+    handleSelectedLinesChange({
+      id,
+      range: {
+        start: comment.startLine,
+        side: comment.side,
+        end: comment.endLine,
+        endSide: comment.side,
+      },
+    });
+    setCollapsedPaths((previous) => {
+      if (!previous.has(comment.path)) return previous;
+      const next = new Set(previous);
       next.delete(comment.path);
       return next;
     });
@@ -362,7 +469,6 @@ export function App() {
     });
   });
 
-  // ── CodeView options (memoized: CodeView diffs options by identity) ──
   const options = useMemo<CodeViewOptions<AnnotationMeta>>(
     () => ({
       theme: codeViewTheme(view.theme),
@@ -373,25 +479,31 @@ export function App() {
       enableGutterUtility: true,
       lineHoverHighlight: 'number',
       hunkSeparators: 'line-info-basic',
-      itemMetrics: { lineHeight: view.lineHeight },
+      itemMetrics: { lineHeight: view.lineHeight, diffHeaderHeight: 40 },
       layout: CODE_VIEW_LAYOUT,
       unsafeCSS: CODE_VIEW_UNSAFE_CSS,
       onGutterUtilityClick(range, context) {
         if (context.item.type === 'diff') handleGutterClick(range, context.item.id);
       },
+      loadDiffFiles: edits.loadDiffFiles,
     }),
-    [effectiveDiffStyle, view.overflow, view.theme, view.lineHeight, handleGutterClick],
+    [
+      effectiveDiffStyle,
+      view.overflow,
+      view.theme,
+      view.lineHeight,
+      handleGutterClick,
+      edits.loadDiffFiles,
+    ],
   );
 
   const renderCustomHeader = useStableCallback((item: CodeViewItem<AnnotationMeta>) => (
     <FileHeader
       path={item.id.slice(2)}
-      summary={filesByPath.get(item.id.slice(2))}
       collapsed={item.collapsed === true}
       onToggleCollapsed={toggleFileCollapsed}
     />
   ));
-
   const renderAnnotation = useStableCallback((annotation: { metadata: AnnotationMeta }) => (
     <CommentCard
       meta={annotation.metadata}
@@ -402,7 +514,6 @@ export function App() {
     />
   ));
 
-  // ── Render ───────────────────────────────────────────────────────────
   if (loadError) {
     return (
       <div className="fullscreen-message error">
@@ -411,22 +522,24 @@ export function App() {
       </div>
     );
   }
-  if (!session || !patch) {
-    return <div className="fullscreen-message">Loading…</div>;
-  }
+  if (!session || !patch) return <div className="fullscreen-message">Loading…</div>;
 
   return (
     <div className="app">
       <Toolbar
         session={session}
         filter={activeFilter}
-        onFilterChange={setFilter}
+        onFilterChange={changeFilter}
         view={{ ...view, diffStyle: effectiveDiffStyle }}
         onViewChange={setView}
         unifiedOnly={narrowView}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((open) => !open)}
         connection={connection}
+        unsavedFiles={edits.dirtyPaths.size}
+        pendingAction={edits.pendingAction}
+        onCommit={() => void applyLocalEdits('commit')}
+        onDiscard={() => void applyLocalEdits('discard')}
       />
       <div className={`content ${narrowView ? 'narrow' : ''}`}>
         {narrowView && sidebarOpen && (
@@ -439,7 +552,8 @@ export function App() {
         )}
         {sidebarOpen && (
           <Sidebar
-            files={patch.files}
+            files={displayedFiles}
+            dirtyPaths={edits.dirtyPaths}
             comments={filterComments}
             totalLines={totalLines}
             onOpenFile={openFile}
@@ -448,6 +562,7 @@ export function App() {
         )}
         <main
           className="diff-pane"
+          inert={edits.pendingAction !== null}
           style={
             {
               '--viewer-font-family': view.fontFamily,
@@ -456,6 +571,16 @@ export function App() {
             } as CSSProperties
           }
         >
+          {edits.loading && (
+            <div className="save-status" role="status">
+              Loading editor…
+            </div>
+          )}
+          {edits.error !== null && (
+            <div className="banner error" role="alert">
+              {edits.error}
+            </div>
+          )}
           {patch.error ? (
             <div className="banner error">{patch.error}</div>
           ) : items.length === 0 ? (
@@ -465,74 +590,24 @@ export function App() {
               diff.
             </div>
           ) : (
-            <CodeView<AnnotationMeta>
-              ref={viewerRef}
-              items={items}
-              className="code-view"
-              options={options}
-              selectedLines={selectedLines}
-              onSelectedLinesChange={handleSelectedLinesChange}
-              renderCustomHeader={renderCustomHeader}
-              renderAnnotation={renderAnnotation}
-            />
+            <FileHeadersProvider value={fileHeaderState}>
+              <EditProvider createEditor={createEditor}>
+                <CodeView<AnnotationMeta>
+                  ref={viewerRef}
+                  items={items}
+                  className="code-view"
+                  options={options}
+                  selectedLines={selectedLines}
+                  onSelectedLinesChange={handleSelectedLinesChange}
+                  onItemEditChange={edits.onItemEditChange}
+                  renderCustomHeader={renderCustomHeader}
+                  renderAnnotation={renderAnnotation}
+                />
+              </EditProvider>
+            </FileHeadersProvider>
           )}
         </main>
       </div>
-    </div>
-  );
-}
-
-/**
- * Custom sticky file header: collapse chevron, status badge, path, ± stats.
- * (The built-in header caches its HTML across item updates, so live patch
- * refreshes would show stale stats.)
- */
-function FileHeader({
-  path,
-  summary,
-  collapsed,
-  onToggleCollapsed,
-}: {
-  path: string;
-  summary: PatchFileSummary | undefined;
-  collapsed: boolean;
-  onToggleCollapsed(path: string): void;
-}) {
-  return (
-    <div className="file-header">
-      <button
-        type="button"
-        className="collapse-button"
-        aria-expanded={!collapsed}
-        aria-label={collapsed ? 'Expand diff' : 'Collapse diff'}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onToggleCollapsed(path);
-        }}
-      >
-        <ChevronDownIcon
-          aria-hidden="true"
-          className={collapsed ? 'chevron collapsed' : 'chevron'}
-        />
-      </button>
-      {summary && (
-        <span className={`file-status ${summary.kind}`} title={summary.kind}>
-          {KIND_BADGE[summary.kind]}
-        </span>
-      )}
-      <span className="file-path">
-        {summary?.prevPath !== undefined ? `${summary.prevPath} → ${path}` : path}
-      </span>
-      {summary &&
-        (summary.binary ? (
-          <span className="file-stats binary">binary</span>
-        ) : (
-          <span className="file-stats">
-            <span className="add">+{summary.additions}</span>
-            <span className="del">−{summary.deletions}</span>
-          </span>
-        ))}
     </div>
   );
 }

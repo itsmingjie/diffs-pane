@@ -36,6 +36,11 @@ export interface PatchFileSummary {
   additions: number;
   deletions: number;
   binary: boolean;
+  /**
+   * Hash of this file's raw patch section. Stable while the file's diff is
+   * unchanged, so clients can reuse parsed/rendered state across refreshes.
+   */
+  sectionHash: string;
 }
 
 export interface PatchPayload {
@@ -82,6 +87,33 @@ export interface NewCommentRequest {
 
 export interface UpdateCommentRequest {
   body: string;
+}
+
+/** Full file contents for one file in a diff, used by edit mode hydration. */
+export interface FileContentsPayload {
+  filter: DiffFilter;
+  path: string;
+  /** Patch hash the contents were validated against. */
+  patchHash: string;
+  /** Base-side contents; null for added files. */
+  oldContents: string | null;
+  /** Current work-tree contents. Deleted and binary files are rejected. */
+  newContents: string;
+  /** sha256 of newContents, used as the save concurrency precondition. */
+  newContentsHash: string;
+}
+
+export interface EditedFile {
+  path: string;
+  contents: string;
+  /** sha256 returned with the contents this edit session started from. */
+  expectedContentsHash: string;
+}
+
+/** Browser drafts to commit, or paths to restore to their committed contents. */
+export interface ApplyEditsRequest {
+  filter: DiffFilter;
+  files: EditedFile[];
 }
 
 /** SSE `patch` event payload (`comments` events carry `{ comments: ReviewComment[] }`). */

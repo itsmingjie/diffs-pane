@@ -55,11 +55,19 @@ export interface SidebarProps {
   /** All comments for the active filter, including outdated ones. */
   comments: ReviewComment[];
   totalLines: number;
+  dirtyPaths: ReadonlySet<string>;
   onOpenFile(path: string): void;
   onOpenComment(comment: ReviewComment): void;
 }
 
-export function Sidebar({ files, comments, totalLines, onOpenFile, onOpenComment }: SidebarProps) {
+export function Sidebar({
+  files,
+  comments,
+  totalLines,
+  dirtyPaths,
+  onOpenFile,
+  onOpenComment,
+}: SidebarProps) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('files');
   const [fileSearch, setFileSearch] = useState<FileSearchControl | null>(null);
 
@@ -108,6 +116,7 @@ export function Sidebar({ files, comments, totalLines, onOpenFile, onOpenComment
       <div className="sidebar-body" hidden={activeTab !== 'files'}>
         <FilesTree
           files={files}
+          dirtyPaths={dirtyPaths}
           comments={comments}
           onOpenFile={onOpenFile}
           onSearchControlChange={setFileSearch}
@@ -116,18 +125,20 @@ export function Sidebar({ files, comments, totalLines, onOpenFile, onOpenComment
       <div className="sidebar-body" hidden={activeTab !== 'comments'}>
         <CommentsList comments={comments} files={files} onOpenComment={onOpenComment} />
       </div>
-      <DiffStats files={files} totalLines={totalLines} />
+      <DiffStats files={files} totalLines={totalLines} unsavedFiles={dirtyPaths.size} />
     </aside>
   );
 }
 
 function FilesTree({
   files,
+  dirtyPaths,
   comments,
   onOpenFile,
   onSearchControlChange,
 }: {
   files: PatchFileSummary[];
+  dirtyPaths: ReadonlySet<string>;
   comments: ReviewComment[];
   onOpenFile(path: string): void;
   onSearchControlChange(control: FileSearchControl): void;
@@ -139,6 +150,8 @@ function FilesTree({
   // Latest data for callbacks captured once at model creation.
   const filePathsRef = useRef(new Set<string>());
   const commentCountsRef = useRef(new Map<string, number>());
+  const dirtyPathsRef = useRef(dirtyPaths);
+  dirtyPathsRef.current = dirtyPaths;
   filePathsRef.current = new Set(files.map((f) => f.path));
   commentCountsRef.current = countByPath(comments);
 
@@ -154,6 +167,13 @@ function FilesTree({
     onSelectionChange: handleSelectionChange,
     renderRowDecoration: ({ item }) => {
       if (!filePathsRef.current.has(item.path)) return null;
+      if (dirtyPathsRef.current.has(item.path)) {
+        return {
+          text: '●',
+          title: 'Unsaved changes',
+          parts: [{ text: '●', color: 'var(--warning)' }],
+        };
+      }
       const count = commentCountsRef.current.get(item.path) ?? 0;
       if (count === 0) return null;
       return {
@@ -189,7 +209,7 @@ function FilesTree({
   useEffect(() => {
     // Re-render decorations with the latest value from commentCountsRef.
     model.setComposition();
-  }, [model, comments]);
+  }, [model, comments, dirtyPaths]);
 
   if (files.length === 0) {
     return <div className="sidebar-empty">No changed files</div>;
@@ -256,7 +276,15 @@ function CommentsList({
 
 const NUMBER_FORMATTER = new Intl.NumberFormat('en-US');
 
-function DiffStats({ files, totalLines }: { files: PatchFileSummary[]; totalLines: number }) {
+function DiffStats({
+  files,
+  totalLines,
+  unsavedFiles,
+}: {
+  files: PatchFileSummary[];
+  totalLines: number;
+  unsavedFiles: number;
+}) {
   const [expanded, setExpanded] = useState(false);
   let additions = 0;
   let deletions = 0;
@@ -278,6 +306,7 @@ function DiffStats({ files, totalLines }: { files: PatchFileSummary[]; totalLine
       {expanded && (
         <div className="diff-stats-details">
           <StatRow label="Files" value={files.length} />
+          <StatRow label="Unsaved files" value={unsavedFiles} />
           <StatRow label="Additions" value={additions} tone="additions" />
           <StatRow label="Deletions" value={deletions} tone="deletions" />
           <StatRow label="Lines of code" value={totalLines} />

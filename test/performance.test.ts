@@ -58,6 +58,12 @@ describe('refresh coalescing', () => {
     metadataDirs(): string[] {
       return [];
     }
+    async commitFiles(): Promise<void> {
+      throw new Error('not used');
+    }
+    async discardFiles(): Promise<void> {
+      throw new Error('not used');
+    }
     async captureTurnBaseline(): Promise<TurnBaseline> {
       return { ref: 'fake', capturedAt: new Date().toISOString() };
     }

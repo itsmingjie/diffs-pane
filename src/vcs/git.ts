@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
-import { copyFile, mkdtemp, rm } from 'node:fs/promises';
+import { access, copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 
@@ -178,6 +178,80 @@ export class GitBackend implements VcsBackend {
       ref: await this.snapshotWorkTree(signal, objectEnv),
       capturedAt: new Date().toISOString(),
     };
+  }
+
+  async discardFiles(paths: string[]): Promise<void> {
+    const head = await this.revParse('HEAD');
+    const pathspecs = paths.map((path) => `:(literal)${path}`);
+    const tracked =
+      head === null
+        ? []
+        : (await this.git(['ls-tree', '-r', '--name-only', '-z', head, '--', ...pathspecs])).stdout
+            .split('\0')
+            .filter(Boolean);
+    if (tracked.length > 0) {
+      await this.git([
+        'restore',
+        '--source',
+        head!,
+        '--staged',
+        '--worktree',
+        '--',
+        ...tracked.map((path) => `:(literal)${path}`),
+      ]);
+    }
+    const added = paths.filter((path) => !tracked.includes(path));
+    if (added.length > 0) {
+      await this.git([
+        'rm',
+        '--cached',
+        '--force',
+        '--ignore-unmatch',
+        '--',
+        ...added.map((path) => `:(literal)${path}`),
+      ]);
+      for (const path of added) await rm(join(this.root, path), { force: true });
+    }
+  }
+
+  async commitFiles(paths: string[]): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), 'diffs-pane-commit-'));
+    const env = { GIT_INDEX_FILE: join(dir, 'index') };
+    let pathspecs: string[] = [];
+    try {
+      const head = await this.revParse('HEAD');
+      await this.git(head ? ['read-tree', head] : ['read-tree', '--empty'], { env });
+      // A rename's old path may already have been removed by an earlier
+      // commit when viewing the full branch diff.
+      pathspecs = (
+        await Promise.all(
+          paths.map(async (path) => {
+            const spec = `:(literal)${path}`;
+            const exists = await access(join(this.root, path)).then(
+              () => true,
+              () => false,
+            );
+            return exists || (await this.git(['ls-files', '-z', '--', spec], { env })).stdout
+              ? spec
+              : null;
+          }),
+        )
+      ).filter((spec): spec is string => spec !== null);
+      await this.git(['add', '-A', '--', ...pathspecs], { env });
+      await this.git(['commit', '--allow-empty', '-m', 'dp: apply local edits'], { env });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    // Only synchronize the committed paths in the real index. Other staged
+    // files were never included in the temporary index or the commit.
+    try {
+      await this.git(['reset', '-q', 'HEAD', '--', ...pathspecs]);
+    } catch (error) {
+      throw new VcsError(
+        `Commit created, but the index could not be updated. Check git status: ${error instanceof Error ? error.message : String(error)}`,
+        true,
+      );
+    }
   }
 
   async computePatch(filter: DiffFilter, options: ComputeOptions): Promise<string> {

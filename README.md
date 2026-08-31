@@ -164,6 +164,19 @@ Selecting lines updates the URL:
 `A` addresses the additions side and `D` the deletions side. Live
 `dp reviews --json` output includes the corresponding URL for each comment.
 
+Text diffs are editable without switching modes. Edits stay in the browser until
+you click **Commit** in the top-right toolbar or press **Cmd+S** (**Ctrl+S** on
+Windows/Linux). Yellow dots identify edited files;
+the expanded Diff Stats panel includes **Unsaved files** and live addition/deletion
+counts. Binary and deleted files remain read-only.
+
+Commit writes the edited files and creates a Git or jj commit named
+`dp: apply local edits`. It includes existing changes in those files, while leaving
+unrelated working-tree and staged changes alone. **Discard** restores the edited
+files to Git `HEAD` or jj `@-`, including existing uncommitted changes in those files.
+Files added since that revision are removed. Disk changes made after editing began
+are rejected instead of overwritten.
+
 ## Diff sources
 
 | Source | Git | jj |

@@ -6,14 +6,18 @@ import { fileURLToPath } from 'node:url';
 import { anchorTextForRange, hunkExcerptForRange, parsePatch } from '../shared/patch.js';
 import {
   isDiffFilter,
+  type ApplyEditsRequest,
   type NewCommentRequest,
   type StatusExport,
   type UpdateCommentRequest,
 } from '../shared/protocol.js';
 import { checkMutationOrigin, checkTransport, readBody } from './security.js';
+import { applyEdits, editErrorStatus, readEditableFile } from './edits.js';
 import { type SessionManager, timingSafeEqualString, DEFAULT_OWNER } from './sessions.js';
 
 const UI_DIR = fileURLToPath(new URL('../ui', import.meta.url));
+
+const MAX_EDIT_BODY_BYTES = 24 * 1024 * 1024;
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -149,6 +153,27 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       return sendJson(res, 201, comment);
     }
 
+    if (subPath === '/api/file' && method === 'GET') {
+      const filter = url.searchParams.get('filter') ?? session.defaultFilter;
+      if (!isDiffFilter(filter)) return sendJson(res, 400, { error: `invalid filter: ${filter}` });
+      const path = url.searchParams.get('path');
+      if (!path) return sendJson(res, 400, { error: 'path is required' });
+      try {
+        return sendJson(res, 200, await readEditableFile(session, filter, path));
+      } catch (error) {
+        return sendJson(res, editErrorStatus(error), {
+          error: error instanceof Error ? error.message : 'Unable to read file',
+        });
+      }
+    }
+
+    if (
+      method === 'POST' &&
+      (subPath === '/api/edits/commit' || subPath === '/api/edits/discard')
+    ) {
+      return handleEdits(req, res, session, subPath.endsWith('/commit') ? 'commit' : 'discard');
+    }
+
     const commentMatch = /^\/api\/comments\/([A-Za-z0-9-]+)$/.exec(subPath);
     if (commentMatch) {
       const id = commentMatch[1]!;
@@ -172,6 +197,42 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
 
     if (method === 'GET' || method === 'HEAD') return serveStatic(res, subPath);
     sendJson(res, 405, { error: 'method not allowed' });
+  }
+
+  async function handleEdits(
+    req: IncomingMessage,
+    res: ServerResponse,
+    session: SessionType,
+    action: 'commit' | 'discard',
+  ): Promise<void> {
+    const body = await parseJsonBody<ApplyEditsRequest>(req, MAX_EDIT_BODY_BYTES);
+    if (
+      !body ||
+      !isDiffFilter(body.filter) ||
+      !Array.isArray(body.files) ||
+      body.files.length === 0 ||
+      body.files.some(
+        (file) =>
+          !file ||
+          typeof file.path !== 'string' ||
+          typeof file.contents !== 'string' ||
+          typeof file.expectedContentsHash !== 'string' ||
+          !/^[0-9a-f]{64}$/.test(file.expectedContentsHash),
+      ) ||
+      new Set(body.files.map((file) => file.path)).size !== body.files.length
+    ) {
+      return sendJson(res, 400, {
+        error: 'filter and unique files with contents and expectedContentsHash are required',
+      });
+    }
+    try {
+      const result = await session.runEdit(() => applyEdits(session, body, action));
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, editErrorStatus(error), {
+        error: error instanceof Error ? error.message : 'Unable to apply local edits',
+      });
+    }
   }
 
   async function handleControl(
@@ -381,9 +442,9 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
   res.end(body);
 }
 
-async function parseJsonBody<T>(req: IncomingMessage): Promise<T | null> {
+async function parseJsonBody<T>(req: IncomingMessage, maxBytes?: number): Promise<T | null> {
   try {
-    const raw = await readBody(req);
+    const raw = await readBody(req, maxBytes);
     if (raw.length === 0) return {} as T;
     return JSON.parse(raw.toString('utf8')) as T;
   } catch {

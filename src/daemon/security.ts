@@ -48,13 +48,13 @@ function splitHost(host: string): { hostname: string; portPart: string | null } 
 }
 
 /** Read a request body with a hard size cap. */
-export function readBody(req: IncomingMessage): Promise<Buffer> {
+export function readBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
     req.on('data', (chunk: Buffer) => {
       total += chunk.length;
-      if (total > MAX_BODY_BYTES) {
+      if (total > maxBytes) {
         reject(new Error('request body too large'));
         req.destroy();
         return;

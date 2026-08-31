@@ -1,5 +1,7 @@
 import type {
+  ApplyEditsRequest,
   DiffFilter,
+  FileContentsPayload,
   NewCommentRequest,
   PatchChangedEvent,
   PatchPayload,
@@ -35,6 +37,22 @@ export function fetchSession(): Promise<SessionInfo> {
 
 export function fetchPatch(filter: DiffFilter): Promise<PatchPayload> {
   return json<PatchPayload>(`api/patch?filter=${filter}`);
+}
+
+/** Full old/new contents for one diffed file (edit-mode hydration). */
+export function fetchFileContents(filter: DiffFilter, path: string): Promise<FileContentsPayload> {
+  return json<FileContentsPayload>(`api/file?filter=${filter}&path=${encodeURIComponent(path)}`);
+}
+
+export function applyEdits(
+  action: 'commit' | 'discard',
+  request: ApplyEditsRequest,
+): Promise<{ ok: true; warning?: string }> {
+  return json(`api/edits/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
 }
 
 export function createComment(request: NewCommentRequest): Promise<ReviewComment> {
