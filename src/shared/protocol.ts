@@ -38,7 +38,7 @@ export interface PatchFileSummary {
   binary: boolean;
   /**
    * Hash of this file's raw patch section. Stable while the file's diff is
-    * unchanged, so clients can reuse parsed/rendered state across refreshes.
+   * unchanged, so clients can reuse parsed/rendered state across refreshes.
    */
   sectionHash: string;
 }

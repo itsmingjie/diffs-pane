@@ -29,7 +29,8 @@ export function useScrollAnchor<T>(
     let itemTop: number | undefined;
     for (const item of items) {
       const top = instance.getTopForItem(item.id);
-      if (top === undefined || top > scrollTop || (itemTop !== undefined && top <= itemTop)) continue;
+      if (top === undefined || top > scrollTop || (itemTop !== undefined && top <= itemTop))
+        continue;
       id = item.id;
       itemTop = top;
     }

@@ -307,9 +307,9 @@ function parseFileLine(raw: string): string | undefined {
   return stripPrefix(unquoteGitPath(trimmed));
 }
 
-export function summarizeFiles(files: ParsedFilePatch[]): Array<
-  Omit<PatchFileSummary, 'sectionHash'>
-> {
+export function summarizeFiles(
+  files: ParsedFilePatch[],
+): Array<Omit<PatchFileSummary, 'sectionHash'>> {
   return files.map((f) => ({
     path: f.path,
     prevPath: f.prevPath,

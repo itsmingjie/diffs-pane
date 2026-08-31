@@ -263,7 +263,8 @@ export function App() {
   const totalLines = useMemo(
     () =>
       displayedParsedFiles.reduce(
-        (sum, file) => sum + (edits.edits.get(file.path)?.liveDiff ?? file.fileDiff).unifiedLineCount,
+        (sum, file) =>
+          sum + (edits.edits.get(file.path)?.liveDiff ?? file.fileDiff).unifiedLineCount,
         0,
       ),
     [displayedParsedFiles, edits.edits],
@@ -278,7 +279,10 @@ export function App() {
         const collapsed = collapsedPaths.has(path);
         const summary = filesByPath.get(path);
         const editable =
-          edits.editorReady && summary !== undefined && !summary.binary && summary.kind !== 'deleted';
+          edits.editorReady &&
+          summary !== undefined &&
+          !summary.binary &&
+          summary.kind !== 'deleted';
         // The version must change whenever any rendered input (including the
         // edit flag) changes, so CodeView re-reads the item.
         const key = `${sectionHash}|${collapsed ? 1 : 0}|${editable ? 1 : 0}|${annotationsKey(annotations)}`;
@@ -305,11 +309,7 @@ export function App() {
     ],
   );
 
-  const captureScrollAnchor = useScrollAnchor(
-    viewerRef,
-    items,
-    patch?.patchHash ?? '',
-  );
+  const captureScrollAnchor = useScrollAnchor(viewerRef, items, patch?.patchHash ?? '');
   prepareForRefreshRef.current = () => {
     captureScrollAnchor(true);
     clearParsedFileCache();
@@ -320,7 +320,12 @@ export function App() {
     if (!target || !items.some((item) => item.id === target.id)) return;
     pendingHashTargetRef.current = null;
     setSelectedLines(target);
-    viewerRef.current?.scrollTo({ type: 'range', id: target.id, range: target.range, align: 'center' });
+    viewerRef.current?.scrollTo({
+      type: 'range',
+      id: target.id,
+      range: target.range,
+      align: 'center',
+    });
   }, [items]);
 
   const handleSelectedLinesChange = useStableCallback((selection: CodeViewLineSelection | null) => {
