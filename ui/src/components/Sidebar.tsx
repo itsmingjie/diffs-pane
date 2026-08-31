@@ -290,7 +290,7 @@ function DiffStats({
   totalLines: number;
   unsavedFiles: number;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   let additions = 0;
   let deletions = 0;
   for (const file of files) {
@@ -311,7 +311,7 @@ function DiffStats({
       {expanded && (
         <div className="diff-stats-details">
           <StatRow label="Files" value={files.length} />
-          <StatRow label="Unsaved files" value={unsavedFiles} />
+          {unsavedFiles > 0 && <StatRow label="Unsaved files" value={unsavedFiles} />}
           <StatRow label="Additions" value={additions} tone="additions" />
           <StatRow label="Deletions" value={deletions} tone="deletions" />
           <StatRow label="Lines of code" value={totalLines} />
