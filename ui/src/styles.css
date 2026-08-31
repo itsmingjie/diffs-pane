@@ -450,7 +450,9 @@ body,
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
+  height: 40px;
+  flex: none;
+  padding: 0 8px;
 }
 
 .sidebar-tabs .tab {
@@ -760,10 +762,10 @@ body,
 }
 
 /* CodeView represents layout.paddingTop as an inline margin on its direct
-   child. Keep it equal to the sidebar's 4px top gutter, even if a reused or
-   resized virtualizer leaves behind a stale inline value. */
+   child. Keep it flush with the top, even if a reused or resized virtualizer
+   leaves behind a stale inline value. */
 .code-view > div {
-  margin-top: 4px !important;
+  margin-top: 0 !important;
 }
 
 .banner {

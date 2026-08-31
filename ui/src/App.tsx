@@ -39,7 +39,7 @@ import { useScrollAnchor } from './useScrollAnchor';
 type Connection = 'connected' | 'connecting' | 'reconnecting' | 'ended';
 
 const NARROW_VIEW_QUERY = '(max-width: 767px)';
-const CODE_VIEW_LAYOUT = { paddingTop: 4, gap: 1, paddingBottom: 16 };
+const CODE_VIEW_LAYOUT = { paddingTop: 0, gap: 1, paddingBottom: 16 };
 const CODE_VIEW_UNSAFE_CSS = `
   [data-diffs-header][data-sticky] {
     top: 4px;
